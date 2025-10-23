@@ -1,0 +1,15 @@
+name: igvf_pseudobulking_test
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - jq
+  - bioconda::bedtools
+  - bioconda::macs3
+  - bioconda::ucsc-bedgraphtobigwig
+  - anndata
+  - pandas
+  - pip
+  - pip:
+    - requests
