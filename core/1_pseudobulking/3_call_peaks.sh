@@ -11,8 +11,6 @@ callpeak () {
 	pT_dir="${datadir}/pseudobulked_pseudorepT"
 	out_dir="${datadir}/peaks"
 
-	echo "hi ${dataset}"
-
 	: '
 	if [ -f "${out_dir}/${dataset}_peaks_overlap_filtered.narrowPeak" ]; then
 		echo "${dataset} already completed! skipping..."
