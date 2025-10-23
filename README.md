@@ -60,6 +60,16 @@ You can include any number of **additional columns** that define pseudobulk grou
 
 See [`test_metadata.tsv`](test_metadata.tsv) for an example metadata file.
 
+```bash
+metadata_path=/path/to/metadata.tsv
+```
+
+If you want to test this out with the provided example metadata, you would do:
+
+```bash
+metadata_path=test_metadata.tsv
+```
+
 > **NOTE:** If you have one annotation file per analysis accession, consider doing the following:
 > 1. Ensure each file has a `barcode` column.  
 > 2. Add a column `uniform_accession` with the same value for all rows in that file.  
