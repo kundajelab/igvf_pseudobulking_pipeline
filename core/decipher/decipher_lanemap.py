@@ -26,6 +26,7 @@ def decipher_lanes(annotations_file_loc, barcode_column, frags_dir, new_annotati
     barcode_lanes = sorted(annotations_df["barcode_without_dna"].unique())
     # decipher
     deciphering = dict()
+    mapped_to = []
     for x in barcode_lanes:
         print(f"--- {x} ---")
         deciphering_x = []
@@ -36,8 +37,10 @@ def decipher_lanes(annotations_file_loc, barcode_column, frags_dir, new_annotati
             print(f"* {a} {b_match}")
             deciphering_x.append((b_match, a))
         deciphering_x = sorted(deciphering_x, reverse=True)
-        assert deciphering_x[0][0] > 10*deciphering_x[1][0], f"could not decipher lanetag {a}"
+        assert deciphering_x[0][0] > 10*deciphering_x[1][0], f"could not decipher lanetag {x}"
+        assert deciphering_x[0][1] not in mapped_to, f"ERROR: {deciphering[0][1]} MAPPED TO MULTIPLE LANES"
         deciphering[x] = deciphering_x[0][1]
+        print(f"{x} was mapped to {deciphering[x]}!")
     # create new annotations
     annotations_df["analysis_accession"] = [deciphering[x] for x in annotations_df["barcode_without_dna"]]
     annotations_df["barcode"] = annotations_df["barcode_just_dna"]
