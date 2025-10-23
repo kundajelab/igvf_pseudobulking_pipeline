@@ -38,7 +38,7 @@ This corresponds to the uniform analysis accessions `IGVFDS6430MYNQ` and `IGVFDS
 
 Run the following:
 ```bash
-bash igvf_process.sh IGVFDS6430MYNQ,IGVFDS5417HJRJ ${access_key} ${secret_key} ${workspace}
+bash igvf_process.sh download IGVFDS6430MYNQ,IGVFDS5417HJRJ ${access_key} ${secret_key} ${workspace}
 ```
 
 This will download the RNA count matrices and fragment files corresponding to the scRNA and scATAC data.
@@ -87,7 +87,7 @@ numcpus=4
 
 Run the pseudobulk pipeline:
 ```bash
-bash igvf_process.sh ${workspace} ${metadata_path} ${chr_order_file} ${blacklist_file} ${numcpus}
+bash igvf_process.sh pseudobulk ${workspace} ${metadata_path} ${chr_order_file} ${blacklist_file} ${numcpus}
 ```
 
 This process will take several minutes to tens of minutes.  
