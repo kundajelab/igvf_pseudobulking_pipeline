@@ -13,15 +13,15 @@ It helps you download IGVF single-cell data and perform pseudobulking.
 
 ### 1) Clone this repository
 ```bash
-git clone https://github.com/yourusername/igvf-pseudobulk.git
-cd igvf-pseudobulk
+git clone https://github.com/kundajelab/igvf_pseudobulking_pipeline.git
+cd igvf_pseudobulking_pipeline
 ```
 
 ### 2) Install the environment
 Use the provided [environment.yml](environment.yml) file to create the conda environment.
 ```bash
 conda env create -f environment.yml
-conda activate igvf-pseudobulk
+conda activate igvf_pseudobulking_test
 ```
 
 ### 3) Choose your workspace directory
