@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+###
+# WRITTEN BY VIVIAN HECHT
+###
+
 access_key=""
 secret_key=""
 igvffs_in=""
