@@ -25,22 +25,27 @@ def decipher_lanes(annotations_file_loc, barcode_column, frags_dir, new_annotati
     annotations_df["barcode_without_dna"] = [remove_acgt_sequence(x) for x in annotations_df[barcode_column]]
     barcode_lanes = sorted(annotations_df["barcode_without_dna"].unique())
     # decipher
-    deciphering = dict()
-    mapped_to = []
-    for x in barcode_lanes:
-        print(f"--- {x} ---")
-        deciphering_x = []
-        annotations_df_x = annotations_df[annotations_df["barcode_without_dna"] == x]
-        barcodes_x = annotations_df_x["barcode_just_dna"]
-        for a, b in accession_barcodes.items():
-            b_match = sum(z in b for z in barcodes_x)
-            print(f"* {a} {b_match}")
-            deciphering_x.append((b_match, a))
-        deciphering_x = sorted(deciphering_x, reverse=True)
-        assert deciphering_x[0][0] > 3*deciphering_x[1][0], f"could not decipher lanetag {x}"
-        assert deciphering_x[0][1] not in mapped_to, f"ERROR: {deciphering[0][1]} MAPPED TO MULTIPLE LANES"
-        deciphering[x] = deciphering_x[0][1]
-        print(f"{x} was mapped to {deciphering[x]}!")
+    assert len(barcode_lanes) == len(accession_barcodes), f"number of lane identifiers ({len(barcode_lanes)}) does not match number of accessions ({len(accession_barcodes)})"
+    if len(barcode_lanes) == 1:
+        print(f"trivial deciphering {barcode_lanes[0]} to {accession_barcodes.items()[0][0]}")
+        deciphering = {barcode_lanes[0]: accession_barcodes.items()[0][0]}
+    else:
+        deciphering = dict()
+        mapped_to = []
+        for x in barcode_lanes:
+            print(f"--- {x} ---")
+            deciphering_x = []
+            annotations_df_x = annotations_df[annotations_df["barcode_without_dna"] == x]
+            barcodes_x = annotations_df_x["barcode_just_dna"]
+            for a, b in accession_barcodes.items():
+                b_match = sum(z in b for z in barcodes_x)
+                print(f"* {a} {b_match}")
+                deciphering_x.append((b_match, a))
+            deciphering_x = sorted(deciphering_x, reverse=True)
+            assert deciphering_x[0][0] > 3*deciphering_x[1][0], f"could not decipher lanetag {x}"
+            assert deciphering_x[0][1] not in mapped_to, f"ERROR: {deciphering[0][1]} MAPPED TO MULTIPLE LANES"
+            deciphering[x] = deciphering_x[0][1]
+            print(f"{x} was mapped to {deciphering[x]}!")
     # create new annotations
     annotations_df["analysis_accession"] = [deciphering[x] for x in annotations_df["barcode_without_dna"]]
     annotations_df["barcode"] = annotations_df["barcode_just_dna"]
