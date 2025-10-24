@@ -48,7 +48,7 @@ This will download the RNA count matrices and fragment files corresponding to th
 ---
 
 ### 5) Prepare metadata for pseudobulking
-Next, prepare a **single metadata file** for both analyses.
+Next, prepare a **single metadata file** for all analyses.
 
 The metadata file must include:
 - a column called `barcode` → ACGT string corresponding to a cell
@@ -70,10 +70,27 @@ If you want to test this out with the provided example metadata, you would do:
 metadata_path=test_metadata.tsv
 ```
 
-> **NOTE:** If you have one annotation file per analysis accession, consider doing the following:
+> **Note: The metadata file must be tab separated, not comma separated.**
+
+For many IGVF datasets, the lab annotation files do not contain information about the uniform analysis accession that each cell comes from.
+Instead, cells are often specified by a column whose entries are strings comprising of both the cell's DNA barcode plus a custom lab *lane identifier* (i.e. GTTTAACCATAAGGAC\_CharacterizationMcGinnis\_Dataset1\_10X\_Lane\_1).
+These custom lab lane identifiers often correspond 1 to 1 with a uniform analysis accession, but deciphering the correspondence can be laborious and require matching barcodes between the various fragment files and the annotation file.
+There is code to try and automate this process.
+
+If your lab annotation file path is stored in `annotation_file`, the column containing barcode + lane identifier information is stored in `cellBC`, and you want your updated annotation file to be stored in `new_annotation_file`, then you can run:
+
+```bash
+bash igvf_process.sh decipher ${annotation_file} ${cellBC} ${workspace} ${new_annotation_file}
+```
+
+The process will fail if it is unable to infer a lane identifier to uniform analysis accession correspondence.
+
+> **Even if this is successful, before it can be used for pseudobulking, you MUST make sure that every column other than the `barcode` and `analysis_accession` columns contain annotations for pseudobulks you want to create. Columns containing other information should be removed before being used as a metdata file for this pseudobulking.**
+
+> **NOTE:** If you have one metadata file per analysis accession, consider doing the following:
 > 1. Ensure each file has a `barcode` column.  
-> 2. Add a column `uniform_accession` with the same value for all rows in that file.  
-> 3. Merge them into a single annotation file.
+> 2. Add a column `analysis_accession` with the same value for all rows in that file.
+> 3. Merge them into a single metadata file.
 
 ---
 
