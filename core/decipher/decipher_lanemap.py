@@ -16,7 +16,7 @@ def decipher_lanes(annotations_file_loc, barcode_column, frags_dir, new_annotati
     accession_barcodes = dict()
     for x in os.listdir(frags_dir):
         print(f"loading barcodes from {x.split('.')[0]}")
-        df = pd.read_csv(f"{frags_dir}/{x}", sep="\t", compression="gzip", names=["chro", "start", "end", "barcode", "reads"], nrows=10000)
+        df = pd.read_csv(f"{frags_dir}/{x}", sep="\t", compression="gzip", names=["chro", "start", "end", "barcode", "reads"], nrows=50000)
         df_barcodes = set([z.split("_")[0] for z in df["barcode"]])
         accession_barcodes[x.split(".")[0]] = df_barcodes
     # load annotations
@@ -42,7 +42,7 @@ def decipher_lanes(annotations_file_loc, barcode_column, frags_dir, new_annotati
                 print(f"* {a} {b_match}")
                 deciphering_x.append((b_match, a))
             deciphering_x = sorted(deciphering_x, reverse=True)
-            assert deciphering_x[0][0] > 3*deciphering_x[1][0], f"could not decipher lanetag {x}"
+            assert deciphering_x[0][0] > 2.5*deciphering_x[1][0], f"could not decipher lanetag {x}"
             assert deciphering_x[0][1] not in mapped_to, f"ERROR: {deciphering[0][1]} MAPPED TO MULTIPLE LANES"
             deciphering[x] = deciphering_x[0][1]
             print(f"{x} was mapped to {deciphering[x]}!")

@@ -23,7 +23,7 @@ echo -e "\t- calling peaks..."
 bash ${scriptdir}/3_call_peaks.sh "${basedir}" "${chr_order_file}" "${blacklist_file}" "${parallel}"
 # 4 - rna pseudobulking
 echo -e "\t- rna pseudobulking..."
-# python ${scriptdir}/4_rna_pseudobulking.py -d "${basedir}" -m "${metadata_loc}"
+python ${scriptdir}/4_rna_pseudobulking.py -d "${basedir}" -m "${metadata_loc}"
 # 5 - rename files
 echo -e "\t- renaming files..."
 bash ${scriptdir}/5_rename_files.sh ${basedir}

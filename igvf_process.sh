@@ -22,6 +22,7 @@ case "${pipeline}" in
 		;;
 	*)
 		echo "Invalid pipeline: ${pipeline}"
+		echo -e "Usage:\nbash igvf_process.sh\n\tdownload \${accession_list} \${access_key} \${secret_key} \${workspace}\n\tdecipher \${annotation_file} \${barcode_lane_column} \${workspace}\n\tpseudobulk \${workspace} \${metadata_path} \${chr_order_file} \${blacklist_file} \${numcpus}"
 		exit 1
 		;;
 esac
