@@ -27,8 +27,8 @@ def decipher_lanes(annotations_file_loc, barcode_column, frags_dir, new_annotati
     # decipher
     assert len(barcode_lanes) == len(accession_barcodes), f"number of lane identifiers ({len(barcode_lanes)}) does not match number of accessions ({len(accession_barcodes)})"
     if len(barcode_lanes) == 1:
-        print(f"trivial deciphering {barcode_lanes[0]} to {accession_barcodes.items()[0][0]}")
-        deciphering = {barcode_lanes[0]: accession_barcodes.items()[0][0]}
+        print(f"trivial deciphering {barcode_lanes[0]} to {list(accession_barcodes.keys())[0]}")
+        deciphering = {barcode_lanes[0]: list(accession_barcodes.keys())[0]}
     else:
         deciphering = dict()
         mapped_to = []
