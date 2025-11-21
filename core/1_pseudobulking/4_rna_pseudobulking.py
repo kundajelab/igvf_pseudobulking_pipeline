@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import os
 
 import anndata as ad
@@ -8,51 +9,60 @@ import pandas as pd
 
 def load_metadata(metadata_loc):
     df = pd.read_csv(metadata_loc, sep="\t")
-    assert "barcode" in df.columns, "metadata must contain 'barcode' column"
     assert "analysis_accession" in df.columns, "metadata must contain 'analysis_accession' column"
+    assert "barcode" in df.columns, "metadata must contain 'barcode' column"
+    assert "annotation" in df.columns, "metadata must contain 'annotation' column"
+    assert "subsample" in df.columns, "metadata must contain 'subsample' column"
+    assert all(["-" not in x for x in df["subsample"].unique().tolist()]), "'subsample' column cannot contain '-' chracter"
+    for c in df.columns:
+        if c.startswith("annotation"):
+            annotations_c = df[c].unique().tolist()
+            assert all(["-" not in x for x in annotations_c]), f"'{c}' column cannot contain '-' character"
     return df
 
 
 def process_h5ad(data_dir, metadata_loc):
-    # load metadata
-    df = load_metadata(metadata_loc)
-    # get all pseudobulks
-    pseudobulks = []
-    for x in df.columns:
-        if x in ["barcode", "analysis_accession"]:
-            continue
-        pseudobulks_x = df[x].unique().tolist()
-        assert all([z not in pseudobulks for z in pseudobulks_x]), "all pseudobulks must have unique names"
-        pseudobulks += pseudobulks_x
-    assert all(["-" not in z for z in pseudobulks]), "no '-' in pseudobulk names"
-    # iterate through h5ads
-    pseudobulk_adatas = {x: [] for x in pseudobulks}
+    # Load metadata
+    metadata_df = load_metadata(metadata_loc)
+    print(metadata_df)
+    # Iterate through h5ads
+    pseudobulk_adatas = defaultdict(list)
     for x in os.listdir(f"{data_dir}/raw_rna"):
+        # Load h5ads
         x_name = x.split(".")[0]
-        df_x = df[df["analysis_accession"] == x_name]
+        metadata_df_x = metadata_df[metadata_df["analysis_accession"] == x_name]
         adata = ad.read_h5ad(f"{data_dir}/raw_rna/{x}")
-        for c in df_x.columns:
-            if c in ["barcode", "analysis_accession"]:
+        print(x_name)
+        print(adata)
+        # TODO: Compute QC
+        # Go through annotation columns --> make pseudobulks
+        for c in metadata_df_x.columns:
+            if not c.startswith("annotation"):
                 continue
-            df_x_c_revdict = {row["barcode"]: row[c] for _, row in df_x.iterrows()}
-            adata.obs[c] = [df_x_c_revdict.get(b.split("_")[0], "NOTINDICT") for b in adata.obs_names]
-        for c in df_x.columns:
-            if c in ["barcode", "analysis_accession"]:
-                continue
-            for p in df_x[c].unique():
-                adata_p = adata[adata.obs[c] == p, :].copy()
-                adata_p.obs["uniform_analysis_accession"] = x_name
-                adata_p.obs = adata_p.obs[["uniform_analysis_accession"]]
-                pseudobulk_adatas[p].append(adata_p)
+            for c_value in metadata_df_x[c].unique().tolist():
+                metadata_df_xc = metadata_df_x[metadata_df_x[c] == c_value]
+                for s in metadata_df_xc["subsample"].unique().tolist():
+                    metadata_df_xcs = metadata_df_xc[metadata_df_xc["subsample"] == s]
+                    print(f"--- {x} {c} {c_value} {s}")
+                    print(metadata_df_xcs)
+                    pseudobulk_name = f"{c}-{c_value}-{s}"
+                    barcodes_xcs = set(metadata_df_xcs["barcode"])
+                    adata_xcs = adata[adata.obs_names.isin(barcodes_xcs), :].copy()
+                    adata_xcs.obs["analysis_accession"] = x_name
+                    pseudobulk_adatas[pseudobulk_name].append(adata_xcs)
     # aggregate across pseudobulks and save
+    print("concat...")
     for p, x in pseudobulk_adatas.items():
+        print(p)
         p_concat = ad.concat(x, axis=0)
+        # TODO: QC
         # save h5ad
         p_concat.write(f"{data_dir}/pseudobulked_rna/{p}.h5ad")
         # make pseudobulk
         counts_df_p = p_concat.var.copy()
         counts_df_p["counts"] = p_concat.X.sum(axis=0).A1
         counts_df_p.to_csv(f"{data_dir}/pseudobulked_rna/{p}-pseudobulked_counts.tsv", sep="\t")
+
 
 
 def main():
