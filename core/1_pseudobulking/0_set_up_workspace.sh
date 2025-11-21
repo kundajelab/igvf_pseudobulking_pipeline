@@ -15,3 +15,6 @@ mkdir -p "${basedir}/pseudobulked_fragments"
 mkdir -p "${basedir}/peaks"
 
 mkdir -p "${basedir}/pseudobulked_rna"
+
+mkdir -p "${basedir}/rna_qc_reports"
+mkdir -p "${basedir}/atac_qc_reports"
