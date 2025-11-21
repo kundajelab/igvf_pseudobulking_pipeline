@@ -55,17 +55,31 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_orde
     num_lines_found = 0
     num_lines_notfound = 0
     fragments_file_loc = f"{data_dir}/raw_fragments/{fragments_file_name}.bed.gz"
+    cell_qc = dict()
     with gzip.open(fragments_file_loc, 'rt') as f:
         for line in f:
             # Parse line
             num_lines += 1
             chro, start, end, barcode, reads = tuple(line.strip().split("\t"))
-            start, end = int(start), int(end)
+            start, end, reads = int(start), int(end), int(reads)
             # TODO: SHIFTING
             start += 0
             end += 0
+            assert reads >= 1
+            # Count fragment stats
+            if barcode not in cell_qc:
+                cell_qc[barcode] = {"num_frags": 0, "num_dup_reads": 0, "num_tss_frags": 0, "mono_nucleosomal_frags": 0, "nucleosome_free_frags": 0, "nonstandard_chr_frags": 0, "annotated": False}
+            cell_qc[barcode]["num_frags"] += reads
+            cell_qc[barcode]["num_dup_reads"] += reads-1
+            frag_len = end-start
+            if frag_len < 148:
+                cell_qc[barcode]["nucleosome_free_frags"] += reads
+            elif frag_len < 295:
+                cell_qc[barcode]["mono_nucleosomal_frags"] += reads
+            # TODO: COMPUTE TSS ENRICHMENT
             # Remove nonstandard chromosomes
             if chro not in allowed_chrs:
+                cell_qc[barcode]["nonstandard_chr_frags"] += reads
                 num_lines_notfound += 1
                 continue
             # Put line into new pseudobulks
@@ -74,6 +88,7 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_orde
                 num_lines_notfound += 1
                 continue
             else:
+                cell_qc[barcode]["annotated"] = True
                 num_lines_found += 1
                 for pseudobulk in line_pseudobulks:
                     # Write fragment to fragments
@@ -91,17 +106,28 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_orde
                         output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{end-1}\t{end}\t{barcode}\t{reads}\n")
                     else:
                         output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{end-1}\t{end}\t{barcode}\t{reads}\n")
-        # close outfiles
-        for f in output_file_handles["pseudorep1"].values():
-            f.close()
-        for f in output_file_handles["pseudorep2"].values():
-            f.close()
-        for f in output_file_handles["pseudorepT"].values():
-            f.close()
-        for f in output_file_handles["fragments"].values():
-            f.close()
-        # results
-        print(f"{fragments_file_name}: {num_lines} fragments --> {num_lines_found} kept/{num_lines_notfound} filtered")
+    # Close outfiles
+    for f in output_file_handles["pseudorep1"].values():
+        f.close()
+    for f in output_file_handles["pseudorep2"].values():
+        f.close()
+    for f in output_file_handles["pseudorepT"].values():
+        f.close()
+    for f in output_file_handles["fragments"].values():
+        f.close()
+    # Results
+    print(f"{fragments_file_name}: {num_lines} fragments --> {num_lines_found} kept/{num_lines_notfound} filtered")
+    # QC results
+    df = pd.DataFrame()
+    df["barcode"] = list(cell_qc.keys())
+    df["annotated"] = [cell_qc[x]["annotated"] for x in df["barcode"]]
+    df["num_frags"] = [cell_qc[x]["num_frags"] for x in df["barcode"]]
+    df["percent_duplicated_reads"] = [cell_qc[x]["num_dup_reads"]/cell_qc[x]["num_frags"] for x in df["barcode"]]
+    df["tss_enrichment"] = [cell_qc[x]["num_tss_frags"] for x in df["barcode"]]
+    df["nucleosomal_signal"] = [(1+cell_qc[x]["mono_nucleosomal_frags"])/(1+cell_qc[x]["nucleosome_free_frags"]) for x in df["barcode"]]
+    df["percent_nonstandard_chr_frags"] = [cell_qc[x]["nonstandard_chr_frags"]/cell_qc[x]["num_frags"] for x in df["barcode"]]
+    print(df)
+    df.to_csv(f"{data_dir}/atac_qc_reports/{fragments_file_name}.csv", index=False)
 
 
 def main():
