@@ -15,11 +15,11 @@ catsort () {
 
 	echo -e "\t\t- ${dataset} sorting fragments..."
 	sort -k 1,1 -k 2,2n -S 10% --parallel=4 ${out_base}_fragments/${dataset}.tsv -o ${out_base}_fragments/${dataset}-sorted.tsv
-	echo -e "\t- ${dataset} sorting pseudorepT..."
+	echo -e "\t\t- ${dataset} sorting pseudorepT..."
 	sort -k 1,1 -k 2,2n -S 10% --parallel=4 ${out_base}_pseudorepT/${dataset}.tsv -o ${out_base}_pseudorepT/${dataset}-sorted.tsv
-	echo -e "\t- ${dataset} sorting pseudorep1..."
+	echo -e "\t\t- ${dataset} sorting pseudorep1..."
 	sort -k 1,1 -k 2,2n -S 10% --parallel=4 ${out_base}_pseudorep1/${dataset}.tsv -o ${out_base}_pseudorep1/${dataset}-sorted.tsv
-	echo -e "\t- ${dataset} sorting pseudorep2..."
+	echo -e "\t\t- ${dataset} sorting pseudorep2..."
 	sort -k 1,1 -k 2,2n -S 10% --parallel=4 ${out_base}_pseudorep2/${dataset}.tsv -o ${out_base}_pseudorep2/${dataset}-sorted.tsv
 
 	echo -e "\t\t- done ${dataset}"

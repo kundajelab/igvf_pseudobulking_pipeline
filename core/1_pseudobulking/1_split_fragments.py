@@ -1,11 +1,16 @@
 import argparse
-import pathlib
 import random
+import time
 
 import gzip
+from numba import njit
+import numpy as np
 import pandas as pd
 
 
+####################
+# HELPER FUNCTIONS #
+####################
 def load_metadata(metadata_loc):
     df = pd.read_csv(metadata_loc, sep="\t")
     assert "analysis_accession" in df.columns, "metadata must contain 'analysis_accession' column"
@@ -20,7 +25,28 @@ def load_metadata(metadata_loc):
     return df
 
 
-def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_order_loc):
+def load_tss_locs(tss_locs_loc):
+    tss_locs_df = pd.read_csv(tss_locs_loc, sep="\t")
+    tss_by_chr = {x: dict() for x in tss_locs_df["chro"].unique()}
+    for _, row in tss_locs_df.iterrows():
+        tss_by_chr[row["chro"]][row["transcript"]] = row["TSS"]
+    tss_by_chr_np = {x: np.array(list(tss_by_chr[x].values()), dtype=int) for x in tss_by_chr}
+    return tss_by_chr_np
+
+
+@njit
+def check_tss_overlap(position, tss_vec):
+    for i in range(len(tss_vec)):
+        distance = tss_vec[i] - position
+        if ((-1000 <= distance) and (distance <= 1000)):
+            return distance+1000 # return first TSS distance found
+    return None
+
+
+##################
+# MAIN FUNCTIONS #
+##################
+def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_sizes_loc, tss_locs_loc):
     # Load metadata
     metadata_df = load_metadata(metadata_loc)
     # Subset metadata to current analysis accession (fragment file name)
@@ -37,8 +63,10 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_orde
         barcodes_to_pseudobulks[row_barcode] = row_pseudobulks
         pseudobulks.update(row_pseudobulks)
     # Get allowed chromosomes
-    chr_order_df = pd.read_csv(chr_order_loc, sep="\t", names=["chr", "size"])
-    allowed_chrs = set(chr_order_df["chr"].unique().tolist())
+    chr_sizes_df = pd.read_csv(chr_sizes_loc, sep="\t", names=["chr", "size"])
+    allowed_chrs = set(chr_sizes_df["chr"].unique().tolist())
+    # Get TSS locations
+    tss_by_chr_np = load_tss_locs(tss_locs_loc)
     # Set up outfiles
     output_file_handles = dict()
     output_file_handles["pseudorep1"] = dict()
@@ -53,39 +81,48 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_orde
     # Iterate through fragments file
     num_lines = 0
     num_lines_found = 0
-    num_lines_notfound = 0
     fragments_file_loc = f"{data_dir}/raw_fragments/{fragments_file_name}.bed.gz"
     cell_qc = dict()
+    start_time = time.time()
     with gzip.open(fragments_file_loc, 'rt') as f:
         for line in f:
+            if (num_lines > 5000000):
+                break
             # Parse line
             num_lines += 1
             chro, start, end, barcode, reads = tuple(line.strip().split("\t"))
             start, end, reads = int(start), int(end), int(reads)
-            # TODO: SHIFTING
-            start += 0
-            end += 0
-            assert reads >= 1
-            # Count fragment stats
+            
+            # Shifting (+4/-4)
+            start_shifted = start + 4
+            end_shifted = end - 4
+            # Count fragment statistics
             if barcode not in cell_qc:
-                cell_qc[barcode] = {"num_frags": 0, "num_dup_reads": 0, "num_tss_frags": 0, "mono_nucleosomal_frags": 0, "nucleosome_free_frags": 0, "nonstandard_chr_frags": 0, "annotated": False}
+                cell_qc[barcode] = {"annotated": False, "num_frags": 0, "num_dup_reads": 0, "mono_nucleosomal_frags": 0, "nucleosome_free_frags": 0, "nonstandard_chr_frags": 0, "tss_insertions": np.zeros((2001, ))}
+            # basic fragment counts
             cell_qc[barcode]["num_frags"] += reads
             cell_qc[barcode]["num_dup_reads"] += reads-1
+            # nucleosomal enrichment
             frag_len = end-start
             if frag_len < 148:
                 cell_qc[barcode]["nucleosome_free_frags"] += reads
             elif frag_len < 295:
                 cell_qc[barcode]["mono_nucleosomal_frags"] += reads
-            # TODO: COMPUTE TSS ENRICHMENT
+            # tss enrichment
+            if chro != "chrM" and chro in tss_by_chr_np:
+                start_tss_pos = check_tss_overlap(start_shifted, tss_by_chr_np[chro])
+                if start_tss_pos is not None:
+                    cell_qc[barcode]["tss_insertions"][start_tss_pos] += 1
+                end_tss_pos = check_tss_overlap(end_shifted, tss_by_chr_np[chro])
+                if end_tss_pos is not None:
+                    cell_qc[barcode]["tss_insertions"][end_tss_pos] += 1
             # Remove nonstandard chromosomes
             if chro not in allowed_chrs:
                 cell_qc[barcode]["nonstandard_chr_frags"] += reads
-                num_lines_notfound += 1
                 continue
             # Put line into new pseudobulks
             line_pseudobulks = barcodes_to_pseudobulks.get(barcode, None)
             if line_pseudobulks is None:
-                num_lines_notfound += 1
                 continue
             else:
                 cell_qc[barcode]["annotated"] = True
@@ -94,18 +131,18 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_orde
                     # Write fragment to fragments
                     output_file_handles["fragments"][pseudobulk].write(line)
                     # Write insertions to pseudorepT
-                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{start}\t{start+1}\t{barcode}\t{reads}\n")
-                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{end-1}\t{end}\t{barcode}\t{reads}\n")
-                    # Write start insertion to pseudorep1/2
+                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{reads}\n")
+                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{reads}\n")
+                    # Write insertions to pseudorep1/2
                     if random.randint(0, 1) == 0:
-                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{start}\t{start+1}\t{barcode}\t{reads}\n")
+                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{reads}\n")
+                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{reads}\n")
                     else:
-                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{start}\t{start+1}\t{barcode}\t{reads}\n")
-                    # Write end insertion to pseudorep1/2
-                    if random.randint(0, 1) == 0:
-                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{end-1}\t{end}\t{barcode}\t{reads}\n")
-                    else:
-                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{end-1}\t{end}\t{barcode}\t{reads}\n")
+                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{reads}\n")
+                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{reads}\n")
+            
+    end_time = time.time()
+    print(f"Time taken: {end_time-start_time:.3f} seconds")
     # Close outfiles
     for f in output_file_handles["pseudorep1"].values():
         f.close()
@@ -115,18 +152,24 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_orde
         f.close()
     for f in output_file_handles["fragments"].values():
         f.close()
-    # Results
-    print(f"{fragments_file_name}: {num_lines} fragments --> {num_lines_found} kept/{num_lines_notfound} filtered")
     # QC results
-    df = pd.DataFrame()
-    df["barcode"] = list(cell_qc.keys())
-    df["annotated"] = [cell_qc[x]["annotated"] for x in df["barcode"]]
-    df["num_frags"] = [cell_qc[x]["num_frags"] for x in df["barcode"]]
-    df["percent_duplicated_reads"] = [cell_qc[x]["num_dup_reads"]/cell_qc[x]["num_frags"] for x in df["barcode"]]
-    df["tss_enrichment"] = [cell_qc[x]["num_tss_frags"] for x in df["barcode"]]
-    df["nucleosomal_signal"] = [(1+cell_qc[x]["mono_nucleosomal_frags"])/(1+cell_qc[x]["nucleosome_free_frags"]) for x in df["barcode"]]
-    df["percent_nonstandard_chr_frags"] = [cell_qc[x]["nonstandard_chr_frags"]/cell_qc[x]["num_frags"] for x in df["barcode"]]
-    print(df)
+    qc_rows = []
+    for barcode, barcode_qc in cell_qc.items():
+        qc_row = dict()
+        qc_row["barcode"] = barcode
+        qc_row["annotated"] = barcode_qc["annotated"]
+        qc_row["num_frags"] = barcode_qc["num_frags"]
+        qc_row["percent_duplicated_reads"] = barcode_qc["num_dup_reads"]/barcode_qc["num_frags"]
+        qc_row["nucleosomal_signal"] = (1+barcode_qc["mono_nucleosomal_frags"])/(1+barcode_qc["nucleosome_free_frags"])
+        tss_insertions = barcode_qc["tss_insertions"]
+        tss_insertions_flank_mean = (np.sum(tss_insertions[:100]) + np.sum(tss_insertions[-100:]))/200
+        tss_insertions *= (1/tss_insertions_flank_mean if tss_insertions_flank_mean > 0 else 0)
+        qc_row["tss_enrichment_max"] = np.max(tss_insertions)
+        qc_row["tss_enrichment_center"] = tss_insertions[1000]
+        qc_row["tss_enrichment_mean"] = np.mean(tss_insertions[500:1501])
+        qc_row["percent_nonstandard_chr_frags"] = barcode_qc["nonstandard_chr_frags"]/barcode_qc["num_frags"]
+        qc_rows.append(qc_row)
+    df = pd.DataFrame(qc_rows)
     df.to_csv(f"{data_dir}/atac_qc_reports/{fragments_file_name}.csv", index=False)
 
 
@@ -137,13 +180,14 @@ def main():
     parser.add_argument('-f', '--fragments', type=str, required=True, help='Input fragments file path')
     parser.add_argument('-d', '--datadir', type=str, required=True, help='Data directory')
     parser.add_argument('-m', '--metadata', type=str, required=True, help='Input annotations metadata file path')
-    parser.add_argument('-c', '--chr_order', type=str, required=True, help='Chromosomes order/size file path')
+    parser.add_argument('-c', '--chr_sizes', type=str, required=True, help='Chromosomes size/order file path')
+    parser.add_argument('-t', '--tss_locs', type=str, required=True, help="TSS locations file")
 
     # Parse the arguments
     args = parser.parse_args()
 
     # Process file
-    process_fragments_file(args.fragments, args.datadir, args.metadata, args.chr_order)
+    process_fragments_file(args.fragments, args.datadir, args.metadata, args.chr_sizes, args.tss_locs)
     
 
 if __name__ == "__main__":
