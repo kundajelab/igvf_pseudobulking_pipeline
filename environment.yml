@@ -4,12 +4,17 @@ channels:
   - bioconda
 dependencies:
   - python=3.10
-  - jq
+  - anndata
+  - bioconda::ucsc-bedgraphtobigwig
   - bioconda::bedtools
   - bioconda::macs3
-  - bioconda::ucsc-bedgraphtobigwig
-  - anndata
+  - jq
   - pandas
+  - numba
+  - numpy
+  - gzip
+  - pandas
+  - scanpy
   - pip
   - pip:
     - requests

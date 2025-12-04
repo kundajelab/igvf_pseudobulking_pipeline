@@ -36,18 +36,18 @@ callpeak () {
 	npeaks=300000
 
 	echo -e "\t\t- ${dataset} getting top peaks..."
-        sort -k 8gr,8gr ${p1_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${p1_out}
-        sort -k 8gr,8gr ${p2_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${p2_out}
-        sort -k 8gr,8gr ${pT_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${pT_out}
+	sort -k 8gr,8gr ${p1_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${p1_out}
+	sort -k 8gr,8gr ${p2_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${p2_out}
+	sort -k 8gr,8gr ${pT_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${pT_out}
 
 	echo -e "\t\t- ${dataset} intersecting peaks"
-        min_overlap=0.5
-        overlap_output=${out_dir}/${dataset}-peaks_overlap.narrowPeak
-        bedtools intersect -u -a ${pT_out} -b ${p1_out} -g ${chr_order} -f ${min_overlap} -F ${min_overlap} -e -sorted | bedtools intersect -u -a stdin -b ${p2_out} -g ${chr_order} -f ${min_overlap} -F ${min_overlap} -e -sorted > ${overlap_output}
+	min_overlap=0.5
+	overlap_output=${out_dir}/${dataset}-peaks_overlap.narrowPeak
+	bedtools intersect -u -a ${pT_out} -b ${p1_out} -g ${chr_order} -f ${min_overlap} -F ${min_overlap} -e -sorted | bedtools intersect -u -a stdin -b ${p2_out} -g ${chr_order} -f ${min_overlap} -F ${min_overlap} -e -sorted > ${overlap_output}
 
 	echo -e "\t\t- ${dataset} filtering blacklist peaks"
-        filtered_output=${out_dir}/${dataset}-peaks_overlap_filtered.narrowPeak
-        bedtools intersect -v -a ${overlap_output} -b ${blacklist} > ${filtered_output}
+	filtered_output=${out_dir}/${dataset}-peaks_overlap_filtered.narrowPeak
+	bedtools intersect -v -a ${overlap_output} -b ${blacklist} > ${filtered_output}
 
 	echo -e "\t\t- ${dataset} making p-value bedgraphs"
 	macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicate1_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicate1_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicate1_ppois.bdg & macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicate2_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicate2_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicate2_ppois.bdg & macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicateT_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicateT_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicateT_ppois.bdg
@@ -56,6 +56,17 @@ callpeak () {
 	sort -k1,1 -k2,2n -S 10% ${out_dir}/${dataset}-combined_ppois.bdg | head -n -1 > ${out_dir}/${dataset}-combined_ppois_sorted.bdg
 	echo -e "\t\t- ${dataset} converting p-value bedgraphs to bigwigs"
 	bedGraphToBigWig ${out_dir}/${dataset}-combined_ppois_sorted.bdg ${chr_order} ${out_dir}/${dataset}-pval.bw
+
+	echo -e "\t\t- ${dataset} making raw insertion bigwig"
+	bedtools genomecov -i ${pT_dir}/${dataset}-sorted.tsv -g ${chr_order} -bg > ${out_dir}/${dataset}-raw_insertions.bdg
+	bedGraphToBigWig ${out_dir}/${dataset}-raw_insertions.bdg ${chr_order} ${out_dir}/${dataset}-raw_insertions.bw
+
+	echo -e "\t\t- ${dataset} computing per cell FRiP"
+	frags_dir="${datadir}/pseudobulked_fragments"
+	cut -f4 "${frags_dir}/${dataset}-sorted.tsv" | sort | uniq -c | awk '{print $2, $1}' > "${out_dir}/${dataset}-fragments_per_cell.txt"
+	bedtools intersect -a  "${frags_dir}/${dataset}-sorted.tsv" -b ${filtered_output} -u > "${out_dir}/${dataset}-fragments_in_peaks.tsv"
+	cut -f4 "${out_dir}/${dataset}-fragments_in_peaks.tsv" | sort | uniq -c | awk '{print $2, $1}' > "${out_dir}/${dataset}-fragments_in_peaks_per_cell.txt"
+	join -a 1 -1 1 -2 1 <(sort "${out_dir}/${dataset}-fragments_per_cell.txt") <(sort "${out_dir}/${dataset}-fragments_in_peaks_per_cell.txt") | awk '{if($3=="") $3=0; frip=$3/$2; print $1, frip}' > "${out_dir}/${dataset}-frip_per_cell.txt"
 
 	echo -e "\t\t${dataset} completed!"
 

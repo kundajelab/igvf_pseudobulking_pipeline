@@ -3,44 +3,10 @@ import random
 import time
 
 import gzip
-from numba import njit
 import numpy as np
 import pandas as pd
 
-
-####################
-# HELPER FUNCTIONS #
-####################
-def load_metadata(metadata_loc):
-    df = pd.read_csv(metadata_loc, sep="\t")
-    assert "analysis_accession" in df.columns, "metadata must contain 'analysis_accession' column"
-    assert "barcode" in df.columns, "metadata must contain 'barcode' column"
-    assert "annotation" in df.columns, "metadata must contain 'annotation' column"
-    assert "subsample" in df.columns, "metadata must contain 'subsample' column"
-    assert all(["-" not in x for x in df["subsample"].unique().tolist()]), "'subsample' column cannot contain '-' chracter"
-    for c in df.columns:
-        if c.startswith("annotation"):
-            annotations_c = df[c].unique().tolist()
-            assert all(["-" not in x for x in annotations_c]), f"'{c}' column cannot contain '-' character"
-    return df
-
-
-def load_tss_locs(tss_locs_loc):
-    tss_locs_df = pd.read_csv(tss_locs_loc, sep="\t")
-    tss_by_chr = {x: dict() for x in tss_locs_df["chro"].unique()}
-    for _, row in tss_locs_df.iterrows():
-        tss_by_chr[row["chro"]][row["transcript"]] = row["TSS"]
-    tss_by_chr_np = {x: np.array(list(tss_by_chr[x].values()), dtype=int) for x in tss_by_chr}
-    return tss_by_chr_np
-
-
-@njit
-def check_tss_overlap(position, tss_vec):
-    for i in range(len(tss_vec)):
-        distance = tss_vec[i] - position
-        if ((-1000 <= distance) and (distance <= 1000)):
-            return distance+1000 # return first TSS distance found
-    return None
+from utils import load_metadata, load_tss_locs, check_tss_overlap
 
 
 ##################
@@ -80,13 +46,12 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
         output_file_handles["fragments"][p] = open(f"{data_dir}/separated_fragments/{p}-{fragments_file_name}.tsv", 'w')
     # Iterate through fragments file
     num_lines = 0
-    num_lines_found = 0
     fragments_file_loc = f"{data_dir}/raw_fragments/{fragments_file_name}.bed.gz"
     cell_qc = dict()
     start_time = time.time()
     with gzip.open(fragments_file_loc, 'rt') as f:
         for line in f:
-            if (num_lines > 5000000):
+            if (num_lines > 5e6):
                 break
             # Parse line
             num_lines += 1
@@ -98,16 +63,17 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
             end_shifted = end - 4
             # Count fragment statistics
             if barcode not in cell_qc:
-                cell_qc[barcode] = {"annotated": False, "num_frags": 0, "num_dup_reads": 0, "mono_nucleosomal_frags": 0, "nucleosome_free_frags": 0, "nonstandard_chr_frags": 0, "tss_insertions": np.zeros((2001, ))}
+                cell_qc[barcode] = {"annotated": False, "num_unique_frags": 0, "num_reads": 0, "num_dup_reads": 0, "mono_nucleosomal_frags": 0, "nucleosome_free_frags": 0, "nonstandard_chr_frags": 0, "tss_insertions": np.zeros((2001, ))}
             # basic fragment counts
-            cell_qc[barcode]["num_frags"] += reads
+            cell_qc[barcode]["num_unique_frags"] += 1
+            cell_qc[barcode]["num_reads"] += reads
             cell_qc[barcode]["num_dup_reads"] += reads-1
             # nucleosomal enrichment
             frag_len = end-start
             if frag_len < 148:
-                cell_qc[barcode]["nucleosome_free_frags"] += reads
+                cell_qc[barcode]["nucleosome_free_frags"] += 1
             elif frag_len < 295:
-                cell_qc[barcode]["mono_nucleosomal_frags"] += reads
+                cell_qc[barcode]["mono_nucleosomal_frags"] += 1
             # tss enrichment
             if chro != "chrM" and chro in tss_by_chr_np:
                 start_tss_pos = check_tss_overlap(start_shifted, tss_by_chr_np[chro])
@@ -118,7 +84,7 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
                     cell_qc[barcode]["tss_insertions"][end_tss_pos] += 1
             # Remove nonstandard chromosomes
             if chro not in allowed_chrs:
-                cell_qc[barcode]["nonstandard_chr_frags"] += reads
+                cell_qc[barcode]["nonstandard_chr_frags"] += 1
                 continue
             # Put line into new pseudobulks
             line_pseudobulks = barcodes_to_pseudobulks.get(barcode, None)
@@ -126,21 +92,19 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
                 continue
             else:
                 cell_qc[barcode]["annotated"] = True
-                num_lines_found += 1
                 for pseudobulk in line_pseudobulks:
                     # Write fragment to fragments
                     output_file_handles["fragments"][pseudobulk].write(line)
                     # Write insertions to pseudorepT
-                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{reads}\n")
-                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{reads}\n")
+                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{1}\n")
+                    output_file_handles["pseudorepT"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{1}\n")
                     # Write insertions to pseudorep1/2
                     if random.randint(0, 1) == 0:
-                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{reads}\n")
-                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{reads}\n")
+                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{1}\n")
+                        output_file_handles["pseudorep1"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{1}\n")
                     else:
-                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{reads}\n")
-                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{reads}\n")
-            
+                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{1}\n")
+                        output_file_handles["pseudorep2"][pseudobulk].write(f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{1}\n")
     end_time = time.time()
     print(f"Time taken: {end_time-start_time:.3f} seconds")
     # Close outfiles
@@ -156,10 +120,11 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
     qc_rows = []
     for barcode, barcode_qc in cell_qc.items():
         qc_row = dict()
+        qc_row["analysis_accession"] = fragments_file_name
         qc_row["barcode"] = barcode
         qc_row["annotated"] = barcode_qc["annotated"]
-        qc_row["num_frags"] = barcode_qc["num_frags"]
-        qc_row["percent_duplicated_reads"] = barcode_qc["num_dup_reads"]/barcode_qc["num_frags"]
+        qc_row["num_frags"] = barcode_qc["num_unique_frags"]
+        qc_row["percent_duplicated_reads"] = barcode_qc["num_dup_reads"]/barcode_qc["num_reads"]
         qc_row["nucleosomal_signal"] = (1+barcode_qc["mono_nucleosomal_frags"])/(1+barcode_qc["nucleosome_free_frags"])
         tss_insertions = barcode_qc["tss_insertions"]
         tss_insertions_flank_mean = (np.sum(tss_insertions[:100]) + np.sum(tss_insertions[-100:]))/200
@@ -167,10 +132,10 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
         qc_row["tss_enrichment_max"] = np.max(tss_insertions)
         qc_row["tss_enrichment_center"] = tss_insertions[1000]
         qc_row["tss_enrichment_mean"] = np.mean(tss_insertions[500:1501])
-        qc_row["percent_nonstandard_chr_frags"] = barcode_qc["nonstandard_chr_frags"]/barcode_qc["num_frags"]
+        qc_row["percent_nonstandard_chr_frags"] = barcode_qc["nonstandard_chr_frags"]/barcode_qc["num_unique_frags"]
         qc_rows.append(qc_row)
     df = pd.DataFrame(qc_rows)
-    df.to_csv(f"{data_dir}/atac_qc_reports/{fragments_file_name}.csv", index=False)
+    df.to_csv(f"{data_dir}/atac_qc_reports/{fragments_file_name}.csv", sep="\t", index=False)
 
 
 def main():
