@@ -21,15 +21,16 @@ def load_tss_locs(tss_locs_loc):
     tss_locs_df = pd.read_csv(tss_locs_loc, sep="\t")
     tss_by_chr = {x: dict() for x in tss_locs_df["chro"].unique()}
     for _, row in tss_locs_df.iterrows():
-        tss_by_chr[row["chro"]][row["transcript"]] = row["TSS"]
-    tss_by_chr_np = {x: np.array(list(tss_by_chr[x].values()), dtype=int) for x in tss_by_chr}
+        strand_sign = 1 if row["strand"] == "+" else -1
+        tss_by_chr[row["chro"]][row["transcript"]] = (row["TSS"], strand_sign)
+    tss_by_chr_np = {x: (np.array([v[0] for v in tss_by_chr[x].values()], dtype=int), np.array([v[1] for v in tss_by_chr[x].values()], dtype=int)) for x in tss_by_chr}
     return tss_by_chr_np
 
 
 @njit
-def check_tss_overlap(position, tss_vec):
+def check_tss_overlap(position, tss_vec, strand_vec):
     for i in range(len(tss_vec)):
-        distance = tss_vec[i] - position
+        distance = strand_vec[i]*(tss_vec[i] - position)
         if ((-1000 <= distance) and (distance <= 1000)):
             return distance+1000 # return first TSS distance found
     return None

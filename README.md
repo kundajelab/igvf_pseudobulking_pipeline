@@ -1,129 +1,189 @@
-# IGVF Pseudobulking (Preliminary Repository)
+# IGVF Pseudobulking
 
-This repository is a **PRELIMINARY** tool to assist with IGVF pseudobulking.  
+This repository is a tool to assist with IGVF pseudobulking.
 It helps you download IGVF single-cell data and perform pseudobulking.
 
 ---
 
-## Instructions
+## Installation
 
 ### 0) Prerequisites
-- Ensure you have **download access** to data from the IGVF portal.  
-- You’ll need your **access key** and **secret key**.
+
+- Ensure you have **download access** to data from the [IGVF portal](data.igvf.org).
+- You’ll need an **access key** and **secret key** to the portal.
 
 ### 1) Clone this repository
+
 ```bash
 git clone https://github.com/kundajelab/igvf_pseudobulking_pipeline.git
 cd igvf_pseudobulking_pipeline
 ```
 
 ### 2) Install the environment
-Use the provided [environment.yml](environment.yml) file to create the conda environment.
+
+Use the provided `environment.yml` file to create the `igvf_pseudobulk` conda environment.
+
 ```bash
 conda env create -f environment.yml
-conda activate igvf_pseudobulking_test
+conda activate igvf_pseudobulk
 ```
 
-### 3) Choose your workspace directory
+### 3) Pick a workspace directory to work in
+
+- A `workspace` is a directory on your filesystem where all downloaded inputs, intermediate files, and outputs will be placed. You choose this path; the pipelines will create and organize subfolders inside it.
+
+Set your workspace path (example):
+
 ```bash
 workspace=/path/to/dir
 ```
 
-### 4) Download IGVF data
-To download IGVF data, first identify **analysis accessions** that you want to process together.  
-These should correspond to analyses that you will pseudobulk together.
+---
 
-For example, suppose we want to work with the **IGVF1** dataset (lab accession `IGVF1`).  
-This corresponds to the uniform analysis accessions `IGVFDS6430MYNQ` and `IGVFDS5417HJRJ`.
+## Usage
 
-Run the following:
+You can run the IGVF pseudobulking code via:
+
 ```bash
-bash igvf_process.sh download IGVFDS6430MYNQ,IGVFDS5417HJRJ ${access_key} ${secret_key} ${workspace}
+python igvf_process.py <download|pseudobulk|full> [options]
 ```
 
-This will download the RNA count matrices and fragment files corresponding to the scRNA and scATAC data.
+### Download pipeline
 
-> From here on, you can do your own pseudobulking. We **strongly encourage** using this standard pipeline code, but any pseudobulking approach can be used.
+The `download` option will download the uniformly processed fragments and RNA counts for the specified IGVF analysis accessions. You can run it with:
+
+```bash
+python igvf_process.py download \
+ -al ${analysis_accession_list} \
+ -w ${workspace} \
+ -ak ${access_key} \
+ -sk ${secret_key}
+```
+
+The arguments are:
+
+- `-al` - a comma-separated list of IGVF analysis accessions to download data from (ex: IGVFDS6430MYNQ,IGVFDS5417HJRJ)
+- `-w` - your chosen [workspace directory](#3-pick-a-workspace-directory-to-work-in)
+- `ak` - your access key
+- `sk` - your secret key
+
+Once it is done running, you will find the following directories inside your `workspace`:
+
+- `raw_fragments/` — this directory will contain one fragments file named `${ANALYSIS_ACCESSION}.tsv.gz` per IGVF analysis accession will be inside it
+- `raw_rna/` - this directory will contain one AnnData RNA count matrix named `${ANALYSIS_ACCESSION}.h5ad` per IGVF analysis accession will be inside it
+
+### Pseudobulk pipeline
+
+The `pseudobulk` option aggregates cells into pseudobulks based on annotation columns and generates per-pseudobulk data and QC. You can run it with:
+
+```bash
+python igvf_process.py pseudobulk \
+ -w ${workspace} \
+ -a /path/to/annotation.tsv \
+ -s ${species} \
+ -c ${numCPUs}
+```
+
+The arguments are:
+
+- `-w` - your chosen [workspace directory](#3-pick-a-workspace-directory-to-work-in)
+- `-a` - path to your annotation file (see: [Annotation File Requirements](#annotation-file-requirements))
+- `-s` - the species (must be one of `human` or `mouse`) reference files are sourced automatically from `genome_data/${species}`
+- `-c` - number of CPUs to use for parallelization
+
+Once it is done running, you will find the following inside your `workspace`:
+
+1) `pseudobulk/` — this directory will contain one subdirectory per pseudobulk, named `${annotation-column}-${annotation-value}-${subsample}`. Each subdirectory contains 7 files:
+    - `fragments.tsv` — combined fragments from all cells in the pseudobulk.
+    - `raw_insertions.bw` — pileup of +4/-4 shifted insertions from all fragments.
+    - `peaks.narrowPeak` — peaks called on shifted insertions (reproducible peak calling with MACS3).
+    - `peaks_minuslog10pval.bw` — -log10 p-value signal track produced by MACS3.
+    - `rna_counts_mtx.h5ad` — RNA counts matrix subset to cells in the pseudobulk.
+    - `pseudobulk_expression.tsv` — pseudobulked expression values.
+    - `per_cell_qc.tsv` — per-cell QC for cells in the pseudobulk with columns:
+      - `analysis_accession` - the analysis accession the cell came from
+      - `barcode` - the cell's barcode
+      - `annotated` - whether or not the cell was annotated (trivially `True` for all cells in the pseudobulk)
+      - `read_count` - the number of RNA reads
+      - `gene_count` - the number of unique genes
+      - `pct_mito` - the percent of reads from mitochondrial genes
+      - `pct_ribo` - the percent of reads from ribosomal genes
+      - `num_frags` - the number of ATAC fragments
+      - `percent_duplicated_reads` - the percent of ATAC reads that are duplicates
+      - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction of nucleosome-free fragments (1-147 bp)
+      - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over insertions at TSS flanks
+      - `frip` - the fraction of fragments overlapping peaks (computed on the pseudobulk peaks)
+      - `percent_nonstandard_chr_frags` - the percent of fragments that come from the fragments in `genome_data/${species}/chr_sizes.tsv`
+2) `analysis_accession_qc_reports/` — this directory will contain one QC file per analysis accession named `${analysis_accession}_per_cell_qc.tsv`. This QC file contains one row per barcode that appeared in the analysis accession fragment file or RNA counts matrix. Not every barcode is guaranteed to be a real annotated cell, however. The QC columns are:
+    - `analysis_accession` - the analysis accession the barcode came from
+    - `barcode` - the barcode
+    - `annotated` - whether or not this barcode was annotated; may NOT be true for all barcode in this file
+    - `found_in_rna` - whether or not this barcode was found in the RNA counts matrix
+    - `found_in_atac` - whether or not this barcode was found in the ATAC fragments file
+    - `read_count` - the number of RNA reads
+    - `gene_count` - the number of unique genes
+    - `pct_mito` - the percent of reads from mitochrondrial genes
+    - `pct_ribo` - the percent of reads from ribosomal genes
+    - `num_frags` - the number of ATAC fragments
+    - `percent_duplicated_reads` - the percent of ATAC reads that are duplicates
+    - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction of nucleosome-free fragments (1-147 bp)
+    - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over insertions at TSS flanks
+    - `percent_nonstandard_chr_frags` - the percent of fragments that come from the fragments in `genome_data/${species}/chr_sizes.tsv`
+3) `pseudobulk_qc.tsv` - this file contains per-pseudobulk QC metrics. The QC metrics are not the mean or median of the corresponding QC metrics from the individual cells in the pseudobulk. Rather, these QC metrics are computed when treating the cluster as a single pseudobulked entity. The columns in this file are:
+    - `pseudobulk` - the name of the pseudobulk
+    - `annotation_level` - the annotation level (the column in the annotation file from which this pseudobulk was derived from)
+    - `annotation` - the annotation itself
+    - `subsample` - the subsample
+    - `num_cells` - the number of cells in the pseudobulk
+    - `gene_count` - the number of unique genes
+    - `pct_mito` - the percent of reads from mitochrondrial genes
+    - `pct_ribo` - the percent of reads from ribosomal genes
+    - `num_frags` - the number of ATAC fragments
+    - `pct_duplicated_reads` - the percent of ATAC reads that are duplicates
+    - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction of nucleosome-free fragments (1-147 bp)
+    - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over insertions at TSS flanks
+    - `frip` - the fraction of fragments overlapping peaks (computed on the pseudobulk peaks)
+
+### Full pipeline
+
+The `full` option runs the Download pipeline followed by the Pseudobulk pipeline, inferring which analysis accessions to download from the provided annotation file. You can run it as
+
+```bash
+python igvf_process.py full \
+ -w ${workspace} \
+ -a /path/to/annotation.tsv \
+ -s ${species} \
+ -ak ${access_key} \
+ -sk ${secret_key} \
+ -c ${numCPUs}
+```
+
+The arguments are:
+
+- `-w` - your chosen [workspace directory](#3-pick-a-workspace-directory-to-work-in)
+- `-a` - path to your annotation file (see: [Annotation File Requirements](#annotation-file-requirements))
+- `-s` - species, one of `human` or `mouse`; reference files are sourced automatically from `genome_data/<species>`
+- `-ak` - your access key
+- `-sk` - your secret key
+- `-c` - number of CPUs to use for parallelization
+
+The outputs are the outputs of the Download and Pseudobulk pipelines as described above.
+Outputs are the union of the Download and Pseudobulk results described above, created within `${workspace}`.
 
 ---
 
-### 5) Prepare metadata for pseudobulking
-Next, prepare a **single metadata file** for all analyses.
+## Annotation File Requirements
 
-The metadata file must include:
-- a column called `barcode` → ACGT string corresponding to a cell
-- a column called `analysis_accession` → one of the accessions
+Annotations are expected to be tab-separated files with the following properties:
 
-Each `(barcode, analysis_accession)` pair specifies a single cell.
-
-You can include any number of **additional columns** that define pseudobulk groupings (e.g., by cell type, time point, etc.).
-
-See [`test_metadata.tsv`](test_metadata.tsv) for an example metadata file.
-
-```bash
-metadata_path=/path/to/metadata.tsv
-```
-
-If you want to test this out with the provided example metadata, you would do:
-
-```bash
-metadata_path=test_metadata.tsv
-```
-
-> **Note: The metadata file must be tab separated, not comma separated.**
-
-For many IGVF datasets, the lab annotation files do not contain information about the uniform analysis accession that each cell comes from.
-Instead, cells are often specified by a column whose entries are strings comprising of both the cell's DNA barcode plus a custom lab *lane identifier* (i.e. GTTTAACCATAAGGAC\_CharacterizationMcGinnis\_Dataset1\_10X\_Lane\_1).
-These custom lab lane identifiers often correspond 1 to 1 with a uniform analysis accession, but deciphering the correspondence can be laborious and require matching barcodes between the various fragment files and the annotation file.
-There is code to try and automate this process.
-
-If your lab annotation file path is stored in `annotation_file`, the column containing barcode + lane identifier information is stored in `cellBC`, and you want your updated annotation file to be stored in `new_annotation_file`, then you can run:
-
-```bash
-bash igvf_process.sh decipher ${annotation_file} ${cellBC} ${workspace} ${new_annotation_file}
-```
-
-The process will fail if it is unable to infer a lane identifier to uniform analysis accession correspondence.
-
-> **Even if this is successful, before it can be used for pseudobulking, you MUST make sure that every column other than the `barcode` and `analysis_accession` columns contain annotations for pseudobulks you want to create. Columns containing other information should be removed before being used as a metdata file for this pseudobulking.**
-
-> **NOTE:** If you have one metadata file per analysis accession, consider doing the following:
-> 1. Ensure each file has a `barcode` column.  
-> 2. Add a column `analysis_accession` with the same value for all rows in that file.
-> 3. Merge them into a single metadata file.
+- Required columns: `analysis_accession`, `barcode`, `subsample`, `annotation`.
+- `annotation` is considered to be the primary cell annotation. However, multiple levels of annotations can be specified (which may be relevant for cell subtypes). Any other column beginning with `annotation` will be considered to be another level of annotation and pseudobulks will be made for it.
+- the `subsample` column and no `annotation` column can contain hyphens (`-`)
 
 ---
 
-### 6) Pseudobulk processing (preliminary)
+## Genome Data
 
-> **NOTE: This part is still preliminary and not yet an IGVF official standard.**  
-> **RNA pseudobulking is not yet implemented (as of 10/23/2025).**
+The `genome_data/` directory holds reference data for supported species (`human`, `mouse`). It includes chromosome sizes, blacklist regions, gene information, and TSS data used during processing.
 
-In this step, fragments will be pseudobulked and peaks will be called.
-
-You need the following files (paths are from the repo root):
-```bash
-chr_order_file="chr_info_data/GRCh38_EBV_sorted_standard.chrom.sizes.tsv"
-blacklist_file="chr_info_data/hg38.blacklist.bed.gz"
-```
-
-Then, determine how many CPUs to use for parallelization, for example:
-```bash
-numcpus=4
-```
-
-Run the pseudobulk pipeline:
-```bash
-bash igvf_process.sh pseudobulk ${workspace} ${metadata_path} ${chr_order_file} ${blacklist_file} ${numcpus}
-```
-
-This process will take several minutes to tens of minutes.  
-Upon completion, you will have the following directory structure:
-
-```bash
-{workspace}/pseudobulked_fragments/   # contains fragments as .tsv files
-{workspace}/peaks/                    # contains narrowPeak peaks + MACS3 signal tracks as bigWigs
-```
-
----
-
+For details on how these files were generated, see `genome_data/README.md`.

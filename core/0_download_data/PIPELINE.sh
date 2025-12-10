@@ -3,10 +3,10 @@
 # Get current script dir
 scriptdir="$(dirname "$(realpath $0)")"
 
-accessions="${1}"
-access_key="${2}"
-secret_key="${3}"
-outdir="${4}"
+outdir="${1}"
+accessions="${2}"
+access_key="${3}"
+secret_key="${4}"
 
 # 0 - set up workspace
 echo -e "\t- setting up workspace..."

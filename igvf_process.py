@@ -11,7 +11,7 @@ def get_species_files(species):
     if not os.path.exists(species_dir):
         raise ValueError(f"Invalid species {species}. Must be either human or mouse.")
     chr_sizes = f"{species_dir}/chr_sizes.tsv"
-    blacklist_file = f"{species_dir}/blacklist.bed.gz"
+    blacklist_file = f"{species_dir}/blacklist.bed"
     tss_file = f"{species_dir}/tss.tsv"
     gene_info_file = f"{species_dir}/gene_info.csv"
     return chr_sizes, blacklist_file, tss_file, gene_info_file
@@ -63,7 +63,7 @@ def main():
     scriptdir = os.path.dirname(os.path.realpath(__file__))
     if args.command == "download":
         download_path = os.path.join(scriptdir, "core", "0_download_data", "PIPELINE.sh")
-        download_command = ["bash", download_path, args.al, args.w, args.ak, args.sk]
+        download_command = ["bash", download_path, args.w, args.al, args.ak, args.sk]
         subprocess.run(download_command)
     elif args.command == "pseudobulk":
         chr_sizes, blacklist_file, tss_file, gene_info_file = get_species_files(args.s)
@@ -72,14 +72,14 @@ def main():
         pseudobulk_command = ["bash", pseudobulk_path, args.w, args.a, chr_sizes, blacklist_file, tss_file, gene_info_file, args.c]
         subprocess.run(pseudobulk_command)
     elif args.command == "full":
-        annotation_df = pd.read_csv(args.a)
+        annotation_df = pd.read_csv(args.a, sep="\t")
         annotation_list = ",".join(annotation_df["analysis_accession"].unique().tolist())
 
         download_path = os.path.join(scriptdir, "core", "0_download_data", "PIPELINE.sh")
-        download_command = ["bash", download_path, annotation_list, args.w, args.ak, args.sk]
+        download_command = ["bash", download_path, args.w, annotation_list, args.ak, args.sk]
         subprocess.run(download_command)
 
-        chr_sizes, blacklist_file, tss_file, gene_info_file = get_species_file(args.s)
+        chr_sizes, blacklist_file, tss_file, gene_info_file = get_species_files(args.s)
 
         pseudobulk_path = os.path.join(scriptdir, "core", "1_pseudobulking", "PIPELINE.sh")
         pseudobulk_command = ["bash", pseudobulk_path, args.w, args.a, chr_sizes, blacklist_file, tss_file, gene_info_file, args.c]

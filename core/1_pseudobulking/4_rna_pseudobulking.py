@@ -81,6 +81,9 @@ def process_h5ad(data_dir, metadata_loc, geneinfo_loc):
         p_concat.write(f"{data_dir}/pseudobulked_rna/{p}.h5ad")
         # make pseudobulk
         counts_df_p = p_concat.var.copy()
+        counts_df_p["gene_symbol"] = counts_df_p.index.map(gene_ref['gene_name'])
+        counts_df_p["mt"] = counts_df_p.index.map(gene_ref['mt']).fillna(False).astype(bool)
+        counts_df_p["ribo"] = counts_df_p.index.map(gene_ref['ribo']).fillna(False).astype(bool)
         counts_df_p["counts"] = p_concat.X.sum(axis=0).A1
         counts_df_p["CPM"] = (counts_df_p["counts"] / counts_df_p["counts"].sum()) * 1e6
         counts_df_p["log10CPM"] = np.log10(counts_df_p["CPM"] + 1)

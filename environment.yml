@@ -1,4 +1,4 @@
-name: igvf_pseudobulking_test
+name: igvf_pseudobulk
 channels:
   - conda-forge
   - bioconda
