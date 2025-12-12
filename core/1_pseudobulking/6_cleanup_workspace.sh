@@ -17,3 +17,5 @@ rm -r "${basedir}/peaks"
 
 rm -r "${basedir}/pseudobulked_rna"
 rm -r "${basedir}/rna_qc_reports"
+
+rm "${basedir}/step5_complete.txt"

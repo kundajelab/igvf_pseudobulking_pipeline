@@ -18,14 +18,12 @@ callpeak () {
 	fi
 	'
 
-	echo -e "\t\t- ${dataset} calling pseudorep1 peaks..." &
-	macs3 callpeak -t ${p1_dir}/${dataset}-sorted.tsv -f BED -n ${dataset}-pseudoreplicate1 -g hs --outdir ${out_dir} -p 0.01 --shift -75 --extsize 150 --nomodel -B --SPMR --keep-dup all --call-summits &> ${out_dir}/log-${dataset}-pseudorep1.txt &
-	echo -e "\t\t- ${dataset} calling pseudorep2 peaks..." &
-	macs3 callpeak -t ${p2_dir}/${dataset}-sorted.tsv -f BED -n ${dataset}-pseudoreplicate2 -g hs --outdir ${out_dir} -p 0.01 --shift -75 --extsize 150 --nomodel -B --SPMR --keep-dup all --call-summits &> ${out_dir}/log-${dataset}-pseudorep2.txt &
-	echo -e "\t\t- ${dataset} calling pseudorepT peaks..." &
-	macs3 callpeak -t ${pT_dir}/${dataset}-sorted.tsv -f BED -n ${dataset}-pseudoreplicateT -g hs --outdir ${out_dir} -p 0.01 --shift -75 --extsize 150 --nomodel -B --SPMR --keep-dup all --call-summits &> ${out_dir}/log-${dataset}-pseudorepT.txt &
-	wait
-	echo -e "\t\t- ${dataset} finished waiting"
+	echo -e "\t\t- ${dataset} calling pseudorep1 peaks..."
+	macs3 callpeak -t ${p1_dir}/${dataset}.tsv -f BED -n ${dataset}-pseudoreplicate1 -g hs --outdir ${out_dir} -p 0.01 --shift -75 --extsize 150 --nomodel -B --SPMR --keep-dup all --call-summits &> ${out_dir}/log-${dataset}-pseudorep1.txt
+	echo -e "\t\t- ${dataset} calling pseudorep2 peaks..."
+	macs3 callpeak -t ${p2_dir}/${dataset}.tsv -f BED -n ${dataset}-pseudoreplicate2 -g hs --outdir ${out_dir} -p 0.01 --shift -75 --extsize 150 --nomodel -B --SPMR --keep-dup all --call-summits &> ${out_dir}/log-${dataset}-pseudorep2.txt
+	echo -e "\t\t- ${dataset} calling pseudorepT peaks..."
+	macs3 callpeak -t ${pT_dir}/${dataset}.tsv -f BED -n ${dataset}-pseudoreplicateT -g hs --outdir ${out_dir} -p 0.01 --shift -75 --extsize 150 --nomodel -B --SPMR --keep-dup all --call-summits &> ${out_dir}/log-${dataset}-pseudorepT.txt
 
 	p1_in=${out_dir}/${dataset}-pseudoreplicate1_peaks.narrowPeak
 	p2_in=${out_dir}/${dataset}-pseudoreplicate2_peaks.narrowPeak
@@ -36,9 +34,9 @@ callpeak () {
 	npeaks=300000
 
 	echo -e "\t\t- ${dataset} getting top peaks..."
-	sort -k 8gr,8gr ${p1_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${p1_out}
-	sort -k 8gr,8gr ${p2_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${p2_out}
-	sort -k 8gr,8gr ${pT_in} | head -n ${npeaks} | sort -k 1,1 -k2,2n > ${pT_out}
+	sort -k 8gr,8gr ${p1_in} | head -n ${npeaks} | bedtools sort -i stdin -g ${chr_order} > ${p1_out}
+	sort -k 8gr,8gr ${p2_in} | head -n ${npeaks} | bedtools sort -i stdin -g ${chr_order} > ${p2_out}
+	sort -k 8gr,8gr ${pT_in} | head -n ${npeaks} | bedtools sort -i stdin -g ${chr_order} > ${pT_out}
 
 	echo -e "\t\t- ${dataset} intersecting peaks"
 	min_overlap=0.5
@@ -50,15 +48,20 @@ callpeak () {
 	bedtools intersect -v -a ${overlap_output} -b ${blacklist} > ${filtered_output}
 
 	echo -e "\t\t- ${dataset} making p-value bedgraphs"
-	macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicate1_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicate1_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicate1_ppois.bdg & macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicate2_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicate2_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicate2_ppois.bdg & macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicateT_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicateT_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicateT_ppois.bdg
+	macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicate1_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicate1_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicate1_ppois.bdg
+	macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicate2_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicate2_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicate2_ppois.bdg
+	macs3 bdgcmp -m ppois -t ${out_dir}/${dataset}-pseudoreplicateT_treat_pileup.bdg -c ${out_dir}/${dataset}-pseudoreplicateT_control_lambda.bdg -o ${out_dir}/${dataset}-pseudoreplicateT_ppois.bdg
+	bedClip ${out_dir}/${dataset}-pseudoreplicate1_ppois.bdg ${chr_order} ${out_dir}/${dataset}-pseudoreplicate1_ppois_clipped.bdg
+	bedClip ${out_dir}/${dataset}-pseudoreplicate2_ppois.bdg ${chr_order} ${out_dir}/${dataset}-pseudoreplicate2_ppois_clipped.bdg
+	bedClip ${out_dir}/${dataset}-pseudoreplicateT_ppois.bdg ${chr_order} ${out_dir}/${dataset}-pseudoreplicateT_ppois_clipped.bdg
 	echo -e "\t\t- ${dataset} combining p-value bedgraphs"
-	macs3 cmbreps -m fisher -i ${out_dir}/${dataset}-pseudoreplicate1_ppois.bdg ${out_dir}/${dataset}-pseudoreplicate2_ppois.bdg ${out_dir}/${dataset}-pseudoreplicateT_ppois.bdg -o ${out_dir}/${dataset}-combined_ppois.bdg
-	sort -k1,1 -k2,2n -S 10% ${out_dir}/${dataset}-combined_ppois.bdg | head -n -1 > ${out_dir}/${dataset}-combined_ppois_sorted.bdg
+	macs3 cmbreps -m fisher -i ${out_dir}/${dataset}-pseudoreplicate1_ppois_clipped.bdg ${out_dir}/${dataset}-pseudoreplicate2_ppois_clipped.bdg ${out_dir}/${dataset}-pseudoreplicateT_ppois_clipped.bdg -o ${out_dir}/${dataset}-combined_ppois.bdg
+	tail -n +2 ${out_dir}/${dataset}-combined_ppois.bdg | bedtools sort -i stdin -g ${chr_order} > ${out_dir}/${dataset}-combined_ppois_sorted.bdg
 	echo -e "\t\t- ${dataset} converting p-value bedgraphs to bigwigs"
 	bedGraphToBigWig ${out_dir}/${dataset}-combined_ppois_sorted.bdg ${chr_order} ${out_dir}/${dataset}-pval.bw
 
 	echo -e "\t\t- ${dataset} making raw insertion bigwig"
-	bedtools genomecov -i ${pT_dir}/${dataset}-sorted.tsv -g ${chr_order} -bg > ${out_dir}/${dataset}-raw_insertions.bdg
+	bedtools genomecov -i ${pT_dir}/${dataset}.tsv -g ${chr_order} -bg > ${out_dir}/${dataset}-raw_insertions.bdg
 	bedGraphToBigWig ${out_dir}/${dataset}-raw_insertions.bdg ${chr_order} ${out_dir}/${dataset}-raw_insertions.bw
 
 	echo -e "\t\t- ${dataset} computing per cell FRiP"

@@ -1,4 +1,3 @@
-from numba import njit
 import numpy as np
 import pandas as pd
 
@@ -17,20 +16,30 @@ def load_metadata(metadata_loc):
     return df
 
 
+def get_pseudobulk_name(annotation_type, annotation, subsample, at_annotation_level):
+    if at_annotation_level:
+        pseudobulk_name = f"{annotation_type}-{annotation}"
+    else:
+        pseudobulk_name = f"{annotation_type}-{annotation}-{subsample}"
+    return pseudobulk_name
+
+
 def load_tss_locs(tss_locs_loc):
     tss_locs_df = pd.read_csv(tss_locs_loc, sep="\t")
-    tss_by_chr = {x: dict() for x in tss_locs_df["chro"].unique()}
-    for _, row in tss_locs_df.iterrows():
-        strand_sign = 1 if row["strand"] == "+" else -1
-        tss_by_chr[row["chro"]][row["transcript"]] = (row["TSS"], strand_sign)
-    tss_by_chr_np = {x: (np.array([v[0] for v in tss_by_chr[x].values()], dtype=int), np.array([v[1] for v in tss_by_chr[x].values()], dtype=int)) for x in tss_by_chr}
+    tss_by_chr_np = dict()
+    for chro in tss_locs_df["chro"].unique():
+        chro_tss_df = tss_locs_df[tss_locs_df["chro"] == chro]
+        tss_positions = chro_tss_df["TSS"].values
+        strand_signs = np.array([1 if s == "+" else -1 for s in chro_tss_df["strand"].values], dtype=int)
+        sorted_indices = np.argsort(tss_positions)
+        tss_by_chr_np[chro] = (tss_positions[sorted_indices], strand_signs[sorted_indices])
     return tss_by_chr_np
 
 
-@njit
 def check_tss_overlap(position, tss_vec, strand_vec):
-    for i in range(len(tss_vec)):
-        distance = strand_vec[i]*(tss_vec[i] - position)
-        if ((-1000 <= distance) and (distance <= 1000)):
-            return distance+1000 # return first TSS distance found
+    i = np.searchsorted(tss_vec, position)
+    distances = (position - tss_vec[[i-1, i]]) * strand_vec[[i-1, i]]
+    abs_distances = np.abs(distances)
+    if np.any(abs_distances <= 1000):
+        return distances[np.argmin(abs_distances)] + 1000
     return None
