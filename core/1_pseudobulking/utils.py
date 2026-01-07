@@ -1,3 +1,4 @@
+from numba import njit
 import numpy as np
 import pandas as pd
 
@@ -36,9 +37,17 @@ def load_tss_locs(tss_locs_loc):
     return tss_by_chr_np
 
 
+@njit
 def check_tss_overlap(position, tss_vec, strand_vec):
     i = np.searchsorted(tss_vec, position)
-    distances = (position - tss_vec[[i-1, i]]) * strand_vec[[i-1, i]]
+    if i == 0:
+        idxs = [i]
+    elif i == len(tss_vec):
+        idxs = [i-1]
+    else:
+        idxs = [i-1, i]
+    idxs = np.array(idxs)
+    distances = (position - tss_vec[idxs]) * strand_vec[idxs]
     abs_distances = np.abs(distances)
     if np.any(abs_distances <= 1000):
         return distances[np.argmin(abs_distances)] + 1000

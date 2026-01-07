@@ -1,4 +1,4 @@
-#!/bin/bash
+#/bin/bash
 
 catsort () {
 	dataset=${1}
@@ -16,8 +16,8 @@ catsort () {
 
 	echo -e "\t\t- ${dataset} sorting fragments..."
 	bedtools sort -i ${out_base}_fragments/${dataset}.tsv -g ${chrom_sizes} > ${out_base}_fragments/${dataset}-sorted.tsv
-	# echo -e "\t\t- ${dataset} sorting pseudorepT..."
-	# bedtools sort -i ${out_base}_pseudorepT/${dataset}.tsv -g ${chrom_sizes} > ${out_base}_pseudorepT/${dataset}-sorted.tsv
+	echo -e "\t\t- ${dataset} sorting pseudorepT..."
+	bedtools sort -i ${out_base}_pseudorepT/${dataset}.tsv -g ${chrom_sizes} > ${out_base}_pseudorepT/${dataset}-sorted.tsv
 	# echo -e "\t\t- ${dataset} sorting pseudorep1..."
 	# bedtools sort -i ${out_base}_pseudorep1/${dataset}.tsv -g ${chrom_sizes} > ${out_base}_pseudorep1/${dataset}-sorted.tsv
 	# echo -e "\t\t- ${dataset} sorting pseudorep2..."

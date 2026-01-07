@@ -52,8 +52,8 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
     start_time = time.time()
     with gzip.open(fragments_file_loc, 'rt') as f:
         for line in f:
-            if num_lines >= 5e6:
-                break
+            # if num_lines >= 5e6:
+            #     break
             # Parse line
             num_lines += 1
             chro, start, end, barcode, reads = tuple(line.strip().split("\t"))
@@ -70,12 +70,13 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
             barcode_qc["nucleosome_free_frags"] += int((end_shifted - start_shifted) < 148)
             barcode_qc["mono_nucleosomal_frags"] += int((148 <= (end_shifted - start_shifted) < 295))
             # tss enrichment
-            start_tss_pos = check_tss_overlap(start_shifted, tss_by_chr_np[chro][0], tss_by_chr_np[chro][1])
-            if start_tss_pos is not None:
-                barcode_qc["tss_insertions"][start_tss_pos] += 1
-            end_tss_pos = check_tss_overlap(end_shifted-1, tss_by_chr_np[chro][0], tss_by_chr_np[chro][1])
-            if end_tss_pos is not None:
-                barcode_qc["tss_insertions"][end_tss_pos] += 1
+            if (chro in tss_by_chr_np) and (chro not in ["chrM"]):
+               start_tss_pos = check_tss_overlap(start_shifted, tss_by_chr_np[chro][0], tss_by_chr_np[chro][1])
+               if start_tss_pos is not None:
+                   barcode_qc["tss_insertions"][start_tss_pos] += 1
+               end_tss_pos = check_tss_overlap(end_shifted-1, tss_by_chr_np[chro][0], tss_by_chr_np[chro][1])
+               if end_tss_pos is not None:
+                   barcode_qc["tss_insertions"][end_tss_pos] += 1
             # Remove nonstandard chromosomes
             if chro not in allowed_chrs:
                 continue

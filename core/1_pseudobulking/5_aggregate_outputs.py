@@ -101,8 +101,8 @@ def aggregate_files(data_dir, metadata_loc, at_annotation_level):
         # ATAC - FRIP
         fragments_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_per_cell.txt", sep=" ", names=["barcode", "num_fragments"])
         fragments_in_peaks_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_in_peaks_per_cell.txt", sep=" ", names=["barcode", "num_fragments_in_peaks"])
-        assert(len(fragments_per_cell_df) == len(fragments_in_peaks_per_cell_df))
-        merged_frip = pd.merge(fragments_per_cell_df, fragments_in_peaks_per_cell_df, how="inner", on="barcode")
+        merged_frip = pd.merge(fragments_per_cell_df, fragments_in_peaks_per_cell_df, how="left", on="barcode")
+        merged_frip["num_fragments_in_peaks"] = merged_frip["num_fragments_in_peaks"].fillna(0)
         pseudobulk_qc_summary["frip"] = np.sum(merged_frip["num_fragments_in_peaks"]) / np.sum(merged_frip["num_fragments"])
         # Append to list
         pseudobulk_qc_rows.append(pseudobulk_qc_summary)
