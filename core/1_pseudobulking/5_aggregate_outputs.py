@@ -94,10 +94,13 @@ def aggregate_files(data_dir, metadata_loc, at_annotation_level):
         pseudobulk_qc_summary["num_frags"] = pseudobulk_atac_qc_raw["num_frags"].sum()
         pseudobulk_qc_summary["pct_duplicated_reads"] = (pseudobulk_atac_qc_raw["raw-num_dup_reads"].sum() / pseudobulk_atac_qc_raw["raw-num_reads"].sum()) * 100
         pseudobulk_qc_summary["nucleosomal_signal"] = (1 + pseudobulk_atac_qc_raw["raw-mono_nucleosomal_frags"].sum()) / (1 + pseudobulk_atac_qc_raw["raw-nucleosome_free_frags"].sum())
+        # ATAC - TSS enrichment
+        TSS_half_window = 2000
+        TSS_half_smooth_window = 5
         pseudobulk_tss_insertions = pseudobulk_tss_matrix.sum(axis=0)
         tss_insertions_flank_mean = (np.sum(pseudobulk_tss_insertions[:100]) + np.sum(pseudobulk_tss_insertions[-100:])) / 200
-        tss_insertions_center = np.mean(pseudobulk_tss_insertions[1000-2:1000+3])
-        pseudobulk_qc_summary["tss_enrichment"] = (tss_insertions_center / (tss_insertions_flank_mean if tss_insertions_flank_mean > 0 else 1))
+        tss_insertions_center = np.mean(pseudobulk_tss_insertions[TSS_half_window-TSS_half_smooth_window:TSS_half_window+TSS_half_smooth_window+1])
+        pseudobulk_qc_summary["tss_enrichment"] = (tss_insertions_center / (tss_insertions_flank_mean + 0.1)) # add 0.1 like snapatac2 to avoid division by zero
         # ATAC - FRIP
         fragments_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_per_cell.txt", sep=" ", names=["barcode", "num_fragments"])
         fragments_in_peaks_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_in_peaks_per_cell.txt", sep=" ", names=["barcode", "num_fragments_in_peaks"])

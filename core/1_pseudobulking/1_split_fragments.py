@@ -32,8 +32,10 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
     # Get allowed chromosomes
     chr_sizes_df = pd.read_csv(chr_sizes_loc, sep="\t", names=["chr", "size"])
     allowed_chrs = set(chr_sizes_df["chr"].unique().tolist())
-    # Get TSS locations
+    # Get TSS locations/data
     tss_by_chr_np = load_tss_locs(tss_locs_loc)
+    TSS_half_window = 2000
+    TSS_half_smooth_window = 5
     # Set up outfiles
     output_file_handles = dict()
     output_file_handles["pseudorep1"] = dict()
@@ -47,7 +49,7 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
         output_file_handles["fragments"][p] = open(f"{data_dir}/separated_fragments/{p}-{fragments_file_name}.tsv", 'w')
     # Iterate through fragments file
     fragments_file_loc = f"{data_dir}/raw_fragments/{fragments_file_name}.bed.gz"
-    cell_qc = defaultdict(lambda: {"annotated": False, "num_unique_frags": 0, "num_reads": 0, "num_dup_reads": 0, "mono_nucleosomal_frags": 0, "nucleosome_free_frags": 0, "tss_insertions": np.zeros((2001, ))})
+    cell_qc = defaultdict(lambda: {"annotated": False, "num_unique_frags": 0, "num_reads": 0, "num_dup_reads": 0, "mono_nucleosomal_frags": 0, "nucleosome_free_frags": 0, "tss_insertions": np.zeros((2*TSS_half_window+1, ))})
     num_lines = 0
     start_time = time.time()
     with gzip.open(fragments_file_loc, 'rt') as f:
@@ -73,10 +75,14 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
             if (chro in tss_by_chr_np) and (chro not in ["chrM"]):
                start_tss_pos = check_tss_overlap(start_shifted, tss_by_chr_np[chro][0], tss_by_chr_np[chro][1])
                if start_tss_pos is not None:
-                   barcode_qc["tss_insertions"][start_tss_pos] += 1
+                   for p in start_tss_pos:
+                       # p is between -L and L
+                       barcode_qc["tss_insertions"][p+TSS_half_window] += 1
                end_tss_pos = check_tss_overlap(end_shifted-1, tss_by_chr_np[chro][0], tss_by_chr_np[chro][1])
                if end_tss_pos is not None:
-                   barcode_qc["tss_insertions"][end_tss_pos] += 1
+                   for p in end_tss_pos:
+                       # p is between -L and L
+                       barcode_qc["tss_insertions"][p+TSS_half_window] += 1
             # Remove nonstandard chromosomes
             if chro not in allowed_chrs:
                 continue
@@ -127,8 +133,8 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
         qc_row["nucleosomal_signal"] = (1+barcode_qc["mono_nucleosomal_frags"])/(1+barcode_qc["nucleosome_free_frags"])
         tss_insertions = barcode_qc["tss_insertions"]
         tss_insertions_flank_mean = (np.sum(tss_insertions[:100]) + np.sum(tss_insertions[-100:]))/200
-        tss_insertions_center = np.mean(tss_insertions[1000-2:1000+3])
-        qc_row["tss_enrichment"] = (tss_insertions_center/(tss_insertions_flank_mean if tss_insertions_flank_mean > 0 else 1))
+        tss_insertions_center = np.mean(tss_insertions[TSS_half_window-TSS_half_smooth_window:TSS_half_window+TSS_half_smooth_window+1])
+        qc_row["tss_enrichment"] = tss_insertions_center/(tss_insertions_flank_mean + 0.1) # add 0.1 like snapatac2 to avoid division by zero
         # Raw values
         qc_row["raw-num_reads"] = barcode_qc["num_reads"]
         qc_row["raw-num_dup_reads"] = barcode_qc["num_dup_reads"]
