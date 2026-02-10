@@ -1,4 +1,5 @@
-#/bin/bash
+#!/bin/bash
+set -euo pipefail
 
 catsort () {
 	dataset=${1}
@@ -34,4 +35,25 @@ chrom_sizes="${3}"
 frags_dir="${datadir}/separated_fragments"
 
 ls ${frags_dir} | sed 's/-[^-]*$//' | sort | uniq | parallel --linebuffer -j ${parallel} catsort {} ${datadir} ${chrom_sizes}
+
+# Validate: every pseudobulk should have sorted fragments and sorted pseudorepT
+failed=0
+for dataset in $(ls ${frags_dir} | sed 's/-[^-]*$//' | sort | uniq); do
+    if [ ! -f "${datadir}/pseudobulked_fragments/${dataset}-sorted.tsv" ]; then
+        echo "ERROR: Step 2 - Missing sorted fragments for ${dataset}" >&2
+        failed=1
+    fi
+    if [ ! -f "${datadir}/pseudobulked_pseudorepT/${dataset}-sorted.tsv" ]; then
+        echo "ERROR: Step 2 - Missing sorted pseudorepT for ${dataset}" >&2
+        failed=1
+    fi
+done
+
+if [ ${failed} -eq 0 ]; then
+    touch "${datadir}/step2_complete.txt"
+    echo "Step 2 (catsort) completed successfully."
+else
+    echo "ERROR: Step 2 (catsort) failed validation." >&2
+    exit 1
+fi
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 callpeak () {
 	dataset=${1}
@@ -86,3 +87,32 @@ parallel="${4}"
 frags_dir="${datadir}/pseudobulked_fragments"
 
 ls ${frags_dir} | grep sorted | sed 's/-[^-]*$//' | sort | uniq | parallel --linebuffer -j ${parallel} callpeak {} ${datadir} ${chr_order_file} ${blacklist_file}
+
+# Validate: every pseudobulk should have peaks, bigwigs, and frip output
+failed=0
+for dataset in $(ls ${frags_dir} | grep sorted | sed 's/-[^-]*$//' | sort | uniq); do
+    if [ ! -f "${datadir}/peaks/${dataset}-peaks_overlap_filtered.narrowPeak" ]; then
+        echo "ERROR: Step 3 - Missing filtered peaks for ${dataset}" >&2
+        failed=1
+    fi
+    if [ ! -f "${datadir}/peaks/${dataset}-pval.bw" ]; then
+        echo "ERROR: Step 3 - Missing p-value bigwig for ${dataset}" >&2
+        failed=1
+    fi
+    if [ ! -f "${datadir}/peaks/${dataset}-raw_insertions.bw" ]; then
+        echo "ERROR: Step 3 - Missing raw insertions bigwig for ${dataset}" >&2
+        failed=1
+    fi
+    if [ ! -f "${datadir}/peaks/${dataset}-frip_per_cell.txt" ]; then
+        echo "ERROR: Step 3 - Missing FRiP per cell for ${dataset}" >&2
+        failed=1
+    fi
+done
+
+if [ ${failed} -eq 0 ]; then
+    touch "${datadir}/step3_complete.txt"
+    echo "Step 3 (call peaks) completed successfully."
+else
+    echo "ERROR: Step 3 (call peaks) failed validation." >&2
+    exit 1
+fi

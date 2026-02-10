@@ -82,6 +82,9 @@ def process_h5ad(data_dir, metadata_loc, at_annotation_level, geneinfo_loc):
         counts_df_p["CPM"] = (counts_df_p["counts"] / counts_df_p["counts"].sum()) * 1e6
         counts_df_p["log10CPM"] = np.log10(counts_df_p["CPM"] + 1)
         counts_df_p.to_csv(f"{data_dir}/pseudobulked_rna/{p}-pseudobulked_counts.tsv", sep="\t")
+    # CONFIRM COMPLETION
+    with open(f"{data_dir}/step4_complete.txt", 'w') as f:
+        f.write("Step 4: RNA Pseudobulking completed successfully!\n")
 
 
 def main():
