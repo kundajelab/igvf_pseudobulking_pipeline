@@ -18,7 +18,7 @@ ls ${raw_frags_dir}/*.bed.gz | grep -oP '(?<=/)\w+(?=\.)' | xargs -I {} -P ${par
 # Validate: every raw fragment file should have a corresponding QC report
 failed=0
 for frag_file in ${raw_frags_dir}/*.bed.gz; do
-    accession=$(basename "${frag_file}" | grep -oP '\w+(?=\.)')
+    accession=$(basename "${frag_file}" .bed.gz)
     if [ ! -f "${datadir}/atac_qc_reports/${accession}.tsv" ]; then
         echo "ERROR: Step 1 - Missing QC report for ${accession}" >&2
         failed=1
