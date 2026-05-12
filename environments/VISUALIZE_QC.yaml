@@ -1,0 +1,10 @@
+name: summary-stats
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - conda-forge::python=3.14.6
+  - conda-forge::pip=26.1.1
+  - pip:
+      - -e ../visualize_qc/.

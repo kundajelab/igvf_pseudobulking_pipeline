@@ -1,0 +1,119 @@
+[workspace]
+authors = ["Salil Deshpande <salil512@stanford.edu>", "Ted Brookings <ted.brookings@standford.edu>"]
+channels = ["conda-forge", "bioconda", "nodefaults"]
+name = "nextflow-skeleton"
+platforms = ["linux-64", "osx-arm64", "osx-64"]
+version = "0.1.0"
+
+[system-requirements]
+# needed because of ancient software on sherlock
+libc   = { family = "glibc", version = "2.17" }
+
+[tool.custom_settings]
+pixi_sub_projects = ["download_accession_files"]
+uv_sub_projects = ["igvf_upload", "pseudobulk", "visualize_qc"]
+
+[tasks]
+pipeline = {
+    description = "Run the IGVF pseudobulk pipeline.",
+    args = [
+        { arg = "metadata", default = "$(readlink -f test_metadata.tsv)" },
+        { arg = "principal_analysis", default = "" },
+        { arg = "queue", default = "normal" },
+        { arg = "profile", default = "$(scripts/get-default-profile.sh)" },
+        { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"}
+    ],
+    cmd = """
+        scripts/run-pipeline.sh \
+            --principal-analysis "{{principal_analysis}}" \
+            --workspace "{{workspace}}" \
+            --queue "{{queue}}" \
+            --profile "{{profile}}" \
+            "{{metadata}}"
+    """
+}
+clear = {
+    description = "Clear all the outputs and temporary files from past pipeline runs.",
+    args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
+    cmd = """rm -rf .nextflow* "{{workspace}}""""
+}
+install-all = {
+    description = "Install main project and sub-projects.",
+    depends-on = [
+        "install-main-project",
+        "install-subprojects"
+    ]
+}
+install-main-project = {
+    description = "Install main project.",
+    cmd = "pixi install"
+}
+install-subprojects = {
+    description = "Install sub-projects",
+    cmd = "pixi run scripts/install-projects.sh"
+}
+
+
+lint-nextflow = {
+    description = "Lint nextflow pipeline",
+    cmd = "nextflow lint main.nf"
+}
+check-subprojects = {
+    description = "Check all sub-projects",
+    cmd = "scripts/check-projects.sh"
+}
+checks = {
+    description = "Run all checks.",
+    depends-on = [
+        "check-subprojects",
+        "lint-nextflow"
+    ]
+}
+get-latest-report = {
+    description = "Get the path to the most recent execution report",
+    args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
+    cmd = """find "{{workspace}}/trace" -name 'execution_report*' | sort | tail -n1"""
+}
+watch-log = {
+    description = "Watch the log of the supplied workflow ID",
+    args = [
+        { arg = "job_id" },
+        { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"}
+    ],
+    cmd = """tail -f -n+1 "$(scripts/get-workdir.sh "{{workspace}}" "{{job_id}}")/.command.log" | grep --line-buffered -v '^+'"""
+}
+build-dockers = {
+    description = "Build all the dockers for the project",
+    args = [
+        { "arg" = "push", "default" = "--push" },
+        { "arg" = "tag", "default" = "latest" }
+    ],
+    cmd = "scripts/build-dockers.sh {{push}} {{tag}}"
+}
+export-secrets = {
+    description = "Use nextflow secrets to export IGVF portal secrets to output variable defs than can be sourced",
+    cmd = """echo "export IGVF_API_KEY=$(nextflow secrets get IGVF_API_KEY)" && \
+        echo "export IGVF_SECRET_KEY=$(nextflow secrets get IGVF_SECRET_KEY)""""
+}
+
+
+[dependencies]
+nextflow = { version = ">=25.10.4,<26", channel = "bioconda" }
+nf-core = ">=3.5.2,<4"
+uv = ">=0.11.15,<0.12"
+micromamba = ">=2.5.0,<2.6.0"
+
+[activation]
+scripts=["scripts/fake-conda.sh"]
+
+[feature.dev.dependencies]
+poethepoet = { version = ">=0.41.0,<0.42", channel = "conda-forge" }
+ty = { version = "0.0.60.*", channel = "conda-forge" }
+ruff = { version = "0.15.22.*", channel = "conda-forge" }
+yq = { version = "4.1.2.*", channel = "conda-forge" }
+yamllint = { version = "1.38.0.*", channel = "conda-forge" }
+python = { version = "3.14.6.*", channel = "conda-forge" }
+pyyaml = { version = "6.0.3.*", channel = "conda-forge" }
+
+[environments]
+default = ["default", "dev"]
