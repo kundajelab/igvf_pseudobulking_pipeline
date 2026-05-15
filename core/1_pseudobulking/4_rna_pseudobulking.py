@@ -17,9 +17,9 @@ def process_h5ad(data_dir, metadata_loc, geneinfo_loc):
     # Load metadata
     metadata_df = load_metadata(metadata_loc)
     # Update metadata with annotation mapping
-    annotation_file = f"{data_dir}/cell_name_to_annotation_mapping.tsv"
-    annotation_df = pd.read_csv(annotation_file, sep="\t")
-    cell_name_to_annotation_dict = dict(zip(annotation_df["cell_name"], annotation_df["annotation"]))
+    cell_name_to_annotation_mapping_file = f"{data_dir}/cell_name_to_annotation_mapping.tsv"
+    cell_name_to_annotation_mapping_df = pd.read_csv(cell_name_to_annotation_mapping_file, sep="\t")
+    cell_name_to_annotation_dict = dict(zip(cell_name_to_annotation_mapping_df["cell_name"], cell_name_to_annotation_mapping_df["annotation"]))
     metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
     # Load gene information
     gene_ref = pd.read_csv(geneinfo_loc, index_col=0)
@@ -29,9 +29,9 @@ def process_h5ad(data_dir, metadata_loc, geneinfo_loc):
     for x in os.listdir(f"{data_dir}/raw_rna"):
         # Load h5ads
         x_name = x.split(".")[0]
-        metadata_df_x = metadata_df[metadata_df["analysis_accession"] == x_name].copy()
+        metadata_df_x = metadata_df[metadata_df["analysis_set_accession"] == x_name].copy()
         adata = ad.read_h5ad(f"{data_dir}/raw_rna/{x}")
-        adata.obs['analysis_accession'] = x_name
+        adata.obs['analysis_set_accession'] = x_name
         adata.obs['barcode'] = adata.obs.index
         # Compute QC for each file (analysis_accession)
         adata.var['gene_symbol'] = adata.var.index.map(gene_ref['gene_name'])
@@ -51,7 +51,7 @@ def process_h5ad(data_dir, metadata_loc, geneinfo_loc):
             'pct_counts_ribo': 'pct_ribo'
         }, inplace=True) # Rename
         adata.obs['rna_read_count'] = adata.obs['rna_read_count'].astype(int)
-        adata.obs['annotated'] = adata.obs['barcode'].isin(set(metadata_df_x['barcode']))
+        adata.obs['annotated'] = adata.obs['barcode'].isin(set(metadata_df_x['barcode_sample']))
         adata.obs = adata.obs[['analysis_accession', 'barcode', 'annotated', 'rna_read_count', 'gene_count', 'pct_mito', 'pct_ribo']]
         # Save QC for all cells in analysis accession
         adata.obs.to_csv(f"{data_dir}/rna_qc_reports/{x_name}-scRNA_all_cells_QC_metrics.csv", sep="\t", index=False)
@@ -61,7 +61,7 @@ def process_h5ad(data_dir, metadata_loc, geneinfo_loc):
             for s in metadata_df_xc["subsample"].unique().tolist():
                 metadata_df_xcs = metadata_df_xc[metadata_df_xc["subsample"] == s]
                 pseudobulk_name = f"{c}-{s}"
-                barcodes_xcs = set(metadata_df_xcs["barcode"])
+                barcodes_xcs = set(metadata_df_xcs["barcode_sample"])
                 adata_xcs = adata[adata.obs_names.isin(barcodes_xcs), :].copy()
                 pseudobulk_adatas[pseudobulk_name].append(adata_xcs)
                 pseudobulk_qcs[pseudobulk_name].append(adata_xcs.obs)

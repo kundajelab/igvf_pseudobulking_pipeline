@@ -19,9 +19,9 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
     # Cell name/annotation mapping
     metadata_df = map_cell_names_to_annotations(metadata_df, data_dir)
     # Subset metadata to current analysis accession (fragment file name)
-    metadata_df = metadata_df[metadata_df["analysis_accession"] == fragments_file_name].copy()
+    metadata_df = metadata_df[metadata_df["analysis_set_accession"] == fragments_file_name].copy()
     # Compute barcodes --> annotation mapping
-    barcodes_to_pseudobulks = {row["barcode"]: f"{row['annotation']}-{row['subsample']}" for _, row in metadata_df.iterrows()}
+    barcodes_to_pseudobulks = {row["barcode_sample"]: f"{row['annotation']}-{row['subsample']}" for _, row in metadata_df.iterrows()}
     pseudobulks = set(barcodes_to_pseudobulks.values()) # {annotation}-{subsample}
     # Get allowed chromosomes
     chr_sizes_df = pd.read_csv(chr_sizes_loc, sep="\t", names=["chr", "size"])
@@ -118,8 +118,8 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_size
     for barcode, barcode_qc in cell_qc.items():
         qc_row = dict()
         # Summary values
-        qc_row["analysis_accession"] = fragments_file_name
-        qc_row["barcode"] = barcode
+        qc_row["analysis_set_accession"] = fragments_file_name
+        qc_row["barcode_sample"] = barcode
         qc_row["annotated"] = barcode_qc["annotated"]
         qc_row["num_frags"] = barcode_qc["num_unique_frags"]
         qc_row["pct_duplicated_reads"] = (barcode_qc["num_dup_reads"]/barcode_qc["num_reads"]) * 100

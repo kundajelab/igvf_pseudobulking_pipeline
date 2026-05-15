@@ -16,12 +16,12 @@ def aggregate_files(data_dir, metadata_loc):
     # Load metadata
     metadata_df = load_metadata(metadata_loc)
     # Update metadata with annotation mapping
-    annotation_file = f"{data_dir}/cell_name_to_annotation_mapping.tsv"
-    annotation_df = pd.read_csv(annotation_file, sep="\t")
-    cell_name_to_annotation_dict = dict(zip(annotation_df["cell_name"], annotation_df["annotation"]))
-    annotation_to_cell_name_revdict = {v: k for k, v in cell_name_to_annotation_dict.items()}
+    cell_name_to_annotation_mapping_file = f"{data_dir}/cell_name_to_annotation_mapping.tsv"
+    cell_name_to_annotation_mapping_df = pd.read_csv(cell_name_to_annotation_mapping_file, sep="\t")
+    cell_name_to_annotation_dict = dict(zip(cell_name_to_annotation_mapping_df["cell_name"], cell_name_to_annotation_mapping_df["annotation"]))
     metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
     print(metadata_df)
+    annotation_to_cell_name_revdict = {v: k for k, v in cell_name_to_annotation_dict.items()}
     # Load combined atac qc (generated per analysis accession, not by pseudobulk)
     atac_combined_qc_list = []
     tss_list = []
@@ -55,22 +55,22 @@ def aggregate_files(data_dir, metadata_loc):
         # ATAC QC - build from combined atac qc
         pseudobulk_atac_qc_chunks = []
         pseudobulk_tss_chunks = []
-        for accession in metadata_pseudobulk_df['analysis_accession'].unique().tolist():
-            metadata_pseudobulk_accession = metadata_pseudobulk_df[metadata_pseudobulk_df['analysis_accession'] == accession]
-            atac_combined_qc_chunk = atac_combined_qc[(atac_combined_qc['analysis_accession'] == accession) & (atac_combined_qc['barcode'].isin(set(metadata_pseudobulk_accession['barcode'])))].copy()
-            barcode_to_subsample = dict(zip(metadata_pseudobulk_accession['barcode'], metadata_pseudobulk_accession['subsample']))
-            atac_combined_qc_chunk["subsample"] = [barcode_to_subsample[x] for x in atac_combined_qc_chunk['barcode']]
+        for accession in metadata_pseudobulk_df['analysis_set_accession'].unique().tolist():
+            metadata_pseudobulk_accession = metadata_pseudobulk_df[metadata_pseudobulk_df['analysis_set_accession'] == accession]
+            atac_combined_qc_chunk = atac_combined_qc[(atac_combined_qc['analysis_set_accession'] == accession) & (atac_combined_qc['barcode_sample'].isin(set(metadata_pseudobulk_accession['barcode_sample'])))].copy()
+            barcode_to_subsample = dict(zip(metadata_pseudobulk_accession['barcode_sample'], metadata_pseudobulk_accession['subsample']))
+            atac_combined_qc_chunk["subsample"] = [barcode_to_subsample[x] for x in atac_combined_qc_chunk['barcode_sample']]
             pseudobulk_atac_qc_chunks.append(atac_combined_qc_chunk)
             pseudobulk_tss_chunks.append(tss_matrix[atac_combined_qc_chunk.index])
         pseudobulk_atac_qc = pd.concat(pseudobulk_atac_qc_chunks, axis=0) # NOTE: contains 'raw-' columns
         pseudobulk_tss_matrix = np.vstack(pseudobulk_tss_chunks)
         pseudobulk_atac_qc_raw = pseudobulk_atac_qc.copy()
         pseudobulk_atac_qc = pseudobulk_atac_qc[[x for x in pseudobulk_atac_qc.columns if not x.startswith("raw-")]] # NOTE: raw columns just used for pseudobulk-lvl QC
-        pseudobulk_frip_qc = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-frip_per_cell.txt", sep=" ", names=["barcode", "frip"])
+        pseudobulk_frip_qc = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-frip_per_cell.txt", sep=" ", names=["barcode_sample", "frip"])
         # Combine QC
-        pseudobulk_atac_qc = pd.merge(pseudobulk_atac_qc, pseudobulk_frip_qc, how="outer", on="barcode")
-        pseudobulk_combined_qc = pd.merge(pseudobulk_rna_qc, pseudobulk_atac_qc, how="outer", on=["analysis_accession", "barcode", "annotated"])
-        pseudobulk_combined_qc = pseudobulk_combined_qc[["analysis_accession", "barcode", "subsample", "rna_read_count", "gene_count", "pct_mito", "pct_ribo", "num_frags", "pct_duplicated_reads", "nucleosomal_signal", "tss_enrichment", "frip"]].copy()
+        pseudobulk_atac_qc = pd.merge(pseudobulk_atac_qc, pseudobulk_frip_qc, how="outer", on="barcode_sample")
+        pseudobulk_combined_qc = pd.merge(pseudobulk_rna_qc, pseudobulk_atac_qc, how="outer", on=["analysis_set_accession", "barcode_sample", "annotated"])
+        pseudobulk_combined_qc = pseudobulk_combined_qc[["analysis_set_accession", "barcode_sample", "subsample", "rna_read_count", "gene_count", "pct_mito", "pct_ribo", "num_frags", "pct_duplicated_reads", "nucleosomal_signal", "tss_enrichment", "frip"]].copy()
         print(pseudobulk_combined_qc)
         pseudobulk_combined_qc.to_csv(f"{data_dir}/pseudobulks/{pseudobulk}/per_cell_qc.tsv", sep="\t", index=False)
         # Confirm that ATAC and RNA cells match
@@ -104,9 +104,9 @@ def aggregate_files(data_dir, metadata_loc):
         tss_insertions_center = np.mean(pseudobulk_tss_insertions[TSS_half_window-TSS_half_smooth_window:TSS_half_window+TSS_half_smooth_window+1])
         pseudobulk_qc_summary["tss_enrichment"] = (tss_insertions_center / (tss_insertions_flank_mean + 0.1)) # add 0.1 like snapatac2 to avoid division by zero
         # ATAC - FRIP
-        fragments_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_per_cell.txt", sep=" ", names=["barcode", "num_fragments"])
-        fragments_in_peaks_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_in_peaks_per_cell.txt", sep=" ", names=["barcode", "num_fragments_in_peaks"])
-        merged_frip = pd.merge(fragments_per_cell_df, fragments_in_peaks_per_cell_df, how="left", on="barcode")
+        fragments_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_per_cell.txt", sep=" ", names=["barcode_sample", "num_fragments"])
+        fragments_in_peaks_per_cell_df = pd.read_csv(f"{data_dir}/peaks/{pseudobulk}-fragments_in_peaks_per_cell.txt", sep=" ", names=["barcode_sample", "num_fragments_in_peaks"])
+        merged_frip = pd.merge(fragments_per_cell_df, fragments_in_peaks_per_cell_df, how="left", on="barcode_sample")
         merged_frip["num_fragments_in_peaks"] = merged_frip["num_fragments_in_peaks"].fillna(0)
         pseudobulk_qc_summary["frip"] = np.sum(merged_frip["num_fragments_in_peaks"]) / np.sum(merged_frip["num_fragments"])
         # Append to list
@@ -117,7 +117,7 @@ def aggregate_files(data_dir, metadata_loc):
     pseudobulk_qc_df.to_csv(f"{data_dir}/pseudobulk_qc.tsv", sep="\t", index=False)
     # Combine QC per analysis accession
     atac_combined_qc = atac_combined_qc[[x for x in atac_combined_qc.columns if not x.startswith("raw-")]] # NOTE: don't need raw columns after pseudobulk processing
-    for accession in metadata_df['analysis_accession'].unique().tolist():
+    for accession in metadata_df['analysis_set_accession'].unique().tolist():
         print(f"Processing analysis accession: {accession}")
         atac_qc = atac_combined_qc[atac_combined_qc['analysis_accession'] == accession].copy()
         atac_qc["found_in_atac"] = True
@@ -126,10 +126,10 @@ def aggregate_files(data_dir, metadata_loc):
         rna_qc["found_in_rna"] = True
         print(rna_qc)
         # Combine QC
-        combined_qc = pd.merge(rna_qc, atac_qc, how="outer", on=["analysis_accession", "barcode", "annotated"])
+        combined_qc = pd.merge(rna_qc, atac_qc, how="outer", on=["analysis_set_accession", "barcode_sample", "annotated"])
         combined_qc["found_in_rna"] = combined_qc["found_in_rna"].fillna(False).astype(bool)
         combined_qc["found_in_atac"] = combined_qc["found_in_atac"].fillna(False).astype(bool)
-        combined_qc = combined_qc[["analysis_accession", "barcode", "annotated", "found_in_rna", "found_in_atac"] + [x for x in combined_qc.columns if x not in ["analysis_accession", "barcode", "annotated", "found_in_rna", "found_in_atac"]]]
+        combined_qc = combined_qc[["analysis_set_accession", "barcode_sample", "annotated", "found_in_rna", "found_in_atac"] + [x for x in combined_qc.columns if x not in ["analysis_set_accession", "barcode_sample", "annotated", "found_in_rna", "found_in_atac"]]]
         combined_qc.to_csv(f"{data_dir}/analysis_accession_qc_reports/{accession}_per_cell_qc.tsv", sep="\t", index=False)
     # CONFIRM COMPLETION
     with open(f"{data_dir}/step5_complete.txt", 'w') as f:

@@ -106,7 +106,7 @@ def get_file_info(base_url, accession, auth):
 
     data = resp.json()
     results = {
-        "analysis_accession": accession,
+        "analysis_set_accession": accession,
         "assay_titles": data.get("assay_titles"),
     }
 
@@ -127,7 +127,7 @@ def download_rna_counts_matrix(outdir, file_info, auth, dry_run):
     if not target_dir.exists():
         target_dir.mkdir(parents=True)
 
-    target_name = target_dir / (file_info["analysis_accession"] + ".h5ad")
+    target_name = target_dir / (file_info["analysis_set_accession"] + ".h5ad")
     download_file(file_info["counts_matrix_href"], target_name, auth, dry_run)
 
 
@@ -136,7 +136,7 @@ def download_atac_fragments(outdir, file_info, auth, dry_run):
     if not target_dir.exists():
         target_dir.mkdir(parents=True)
 
-    target_name = target_dir / (file_info["analysis_accession"] + ".bed.gz")
+    target_name = target_dir / (file_info["analysis_set_accession"] + ".bed.gz")
     download_file(file_info["fragments_href"], target_name, auth, dry_run)
 
 

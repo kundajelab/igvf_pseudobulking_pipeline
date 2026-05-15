@@ -102,8 +102,8 @@ Once it is done running, you will find the following inside your `workspace`:
     - `rna_counts_mtx.h5ad` — RNA counts matrix subset to cells in the pseudobulk.
     - `pseudobulk_expression.tsv` — pseudobulked expression values.
     - `per_cell_qc.tsv` — per-cell QC for cells in the pseudobulk with columns:
-      - `analysis_accession` - the analysis accession the cell came from
-      - `barcode` - the cell's barcode
+      - `analysis_set_accession` - the analysis accession the cell came from
+      - `barcode_sample` - the cell's barcode
       - `subsample` - the subsample the cell derives from
       - `rna_read_count` - the number of RNA reads
       - `gene_count` - the number of unique genes
@@ -115,8 +115,8 @@ Once it is done running, you will find the following inside your `workspace`:
       - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over the average number of shifted insertions at TSS flanks
       - `frip` - the fraction of fragments overlapping peaks (computed on the pseudobulk peaks)
 3) `analysis_accession_qc_reports/` — this directory will contain one QC file per analysis accession named `${analysis_accession}_per_cell_qc.tsv`. This QC file contains one row per barcode that appeared in the analysis accession fragment file or RNA counts matrix. Not every barcode is guaranteed to be a real annotated cell, however. The QC columns are:
-    - `analysis_accession` - the analysis accession the barcode came from
-    - `barcode` - the barcode
+    - `analysis_set_accession` - the analysis accession the barcode came from
+    - `barcode_sample` - the barcode
     - `annotated` - whether or not this barcode was annotated; may NOT be true for all barcode in this file
     - `found_in_rna` - whether or not this barcode was found in the RNA counts matrix
     - `found_in_atac` - whether or not this barcode was found in the ATAC fragments file

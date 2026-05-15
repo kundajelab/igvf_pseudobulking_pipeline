@@ -1,3 +1,5 @@
+import os
+
 from numba import njit
 import numpy as np
 import pandas as pd
@@ -14,12 +16,17 @@ def load_metadata(metadata_loc):
     assert "subsample" in df.columns, "metadata must contain 'subsample' column"
     assert "analysis_set_accession" in df.columns, "metadata must contain 'analysis_set_accession' column"
     # COLUMN STRUCTURE REQUIREMENTS
-    assert "-" not in df["subsample"].unique().tolist(), "subsample values cannot contain hyphens"
+    assert all("-" not in x for x in df["subsample"].unique().tolist()), "subsample values cannot contain hyphens"
     # RETURN
     return df
 
 
 def map_cell_names_to_annotations(metadata_df, data_dir):
+    if os.path.exists(f"{data_dir}/cell_name_to_annotation_mapping.tsv"):
+        cell_name_to_annotation_mapping_df = pd.read_csv(f"{data_dir}/cell_name_to_annotation_mapping.tsv", sep="\t")
+        cell_name_to_annotation_dict = dict(zip(cell_name_to_annotation_mapping_df["cell_name"], cell_name_to_annotation_mapping_df["annotation"]))
+        metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
+        return metadata_df
     # Cell name to annotation mapping
     cell_name_to_annotation_dict = {x: f"annotation_{i}" for i, x in enumerate(sorted(metadata_df["cell_name"].unique()))}
     # Map cell names to annotations in metadata_df
