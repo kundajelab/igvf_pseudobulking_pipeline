@@ -14,8 +14,7 @@ def load_metadata(metadata_loc):
     assert "subsample" in df.columns, "metadata must contain 'subsample' column"
     assert "analysis_set_accession" in df.columns, "metadata must contain 'analysis_set_accession' column"
     # COLUMN STRUCTURE REQUIREMENTS
-    # TODO: SUBSAMPLE CANNOT CONTAIN HYPHENS OR CHARACTERS THAT WOULD BREAK FILE NAMING
-
+    assert "-" not in df["subsample"].unique().tolist(), "subsample values cannot contain hyphens"
     # RETURN
     return df
 

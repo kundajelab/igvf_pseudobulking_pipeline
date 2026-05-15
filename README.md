@@ -187,7 +187,7 @@ Annotations are expected to be tab-separated files with the following properties
 - Annotation file format requirements:
   - The annotation file **must be a .tsv file**.
   - No column values should contain tabs (otherwise, file parsing will fail).
-  - The `subsample` column must contain 
+  - The `subsample` column cannot contain hyphens.
 
 ---
 
