@@ -19,6 +19,7 @@ catsort () {
 	bedtools sort -i ${out_base}_fragments/${dataset}.tsv -g ${chrom_sizes} > ${out_base}_fragments/${dataset}-sorted.tsv
 	echo -e "\t\t- ${dataset} sorting pseudorepT..."
 	bedtools sort -i ${out_base}_pseudorepT/${dataset}.tsv -g ${chrom_sizes} > ${out_base}_pseudorepT/${dataset}-sorted.tsv
+	# NOTE: do not need to sort pseudoreps 1 AND 2 since they are only used for peak calling and macs3 can handle unsorted input
 	# echo -e "\t\t- ${dataset} sorting pseudorep1..."
 	# bedtools sort -i ${out_base}_pseudorep1/${dataset}.tsv -g ${chrom_sizes} > ${out_base}_pseudorep1/${dataset}-sorted.tsv
 	# echo -e "\t\t- ${dataset} sorting pseudorep2..."

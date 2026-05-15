@@ -6,16 +6,14 @@ scriptdir="$(dirname "$(realpath $0)")"
 
 basedir="${1}"
 metadata_loc="${2}"
-at_annotation_level="${3}"
-chr_sizes="${4}"
-blacklist_file="${5}"
-tss_file="${6}"
-gene_info="${7}"
-ncpus="${8}"
+chr_sizes="${3}"
+blacklist_file="${4}"
+tss_file="${5}"
+gene_info="${6}"
+ncpus="${7}"
 
 echo "basedir: ${basedir}"
 echo "metadata: ${metadata_loc}"
-echo "at_annotation_level: ${at_annotation_level}"
 echo "chr sizes: ${chr_sizes}"
 echo "blacklist_file: ${blacklist_file}"
 echo "tss file: ${tss_file}"
@@ -42,7 +40,7 @@ bash ${scriptdir}/0_set_up_workspace.sh "${basedir}"
 
 # 1 - split fragments
 echo -e "\t- splitting fragments..."
-bash ${scriptdir}/1_split_fragments.sh "${basedir}" "${metadata_loc}" "${at_annotation_level}" "${chr_sizes}" "${tss_file}" "${ncpus}"
+bash ${scriptdir}/1_split_fragments.sh "${basedir}" "${metadata_loc}" "${chr_sizes}" "${tss_file}" "${ncpus}"
 check_step 1 "split fragments"
 
 # 2 - catsort
@@ -57,12 +55,12 @@ check_step 3 "call peaks"
 
 # 4 - rna pseudobulking
 echo -e "\t- rna pseudobulking..."
-python ${scriptdir}/4_rna_pseudobulking.py -d "${basedir}" -m "${metadata_loc}" -a "${at_annotation_level}" -g "${gene_info}"
+python ${scriptdir}/4_rna_pseudobulking.py -d "${basedir}" -m "${metadata_loc}" -g "${gene_info}"
 check_step 4 "rna pseudobulking"
 
 # 5 - aggregate_pseudobulk_outputs
 echo -e "\t- aggregating pseudobulk outputs..."
-python ${scriptdir}/5_aggregate_outputs.py -d ${basedir} -m "${metadata_loc}" -a "${at_annotation_level}"
+python ${scriptdir}/5_aggregate_outputs.py -d ${basedir} -m "${metadata_loc}"
 check_step 5 "aggregate outputs"
 
 # 6 - cleanup

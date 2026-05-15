@@ -74,7 +74,7 @@ Once it is done running, you will find the following directories inside your `wo
 
 ### Pseudobulk pipeline
 
-The `pseudobulk` option aggregates cells into pseudobulks based on annotation columns and generates per-pseudobulk data and QC. You can run it with:
+The `pseudobulk` option uses a standardized cell annotation file to aggregate cells into pseudobulks and perform QC. You can run it with:
 
 ```bash
 python igvf_process.py pseudobulk \
@@ -91,13 +91,10 @@ The required arguments are:
 - `-s` - the species (must be one of `human` or `mouse`) reference files are sourced automatically from `genome_data/${species}`
 - `-c` - number of CPUs to use for parallelization
 
-You can also use the optional flag:
-
-- `--at_annotation_level` - whether or not to pseudobulk at the annotation level. If not set (the default behavior), pseudobulks will be generated at the annotation x subsample level. If set, pseudobulks will be generated at the annotation level and pooled across subsamples.
-
 Once it is done running, you will find the following inside your `workspace`:
 
-1) `pseudobulk/` — this directory will contain one subdirectory per pseudobulk. By default, these will be named `${annotation-column}-${annotation-value}-${subsample}`. If the `--at_annotation_level` flag is used, the pseudobulks will be named `${annotation-column}-${annotation-value}`.Each pseudobulk subdirectory contains 7 files:
+1) `cell_name_to_annotation_mapping.tsv` — This file contains a mapping from `cell_name` values in the annotation file to a unique `annotation_ID` of the form `annotation_NUMBER`. This internal mapping is done so no restrictions are placed on the format of `cell_name`. You can refer to this file in order to identify which pseudobulks correspond to which cell names.
+2) `pseudobulk/` — This directory will contain one subdirectory per pseudobulk. These will be named `${annotation_ID}-${subsample}` where `annotation_ID` is the unique identifier of a cell name. This can be deciphered by referencing `cell_name_to_annotation_mapping.tsv`. Each pseudobulk subdirectory contains 7 files:
     - `fragments.tsv` — combined fragments from all cells in the pseudobulk.
     - `raw_insertions.bw` — pileup of +4/-4 shifted insertions from all fragments.
     - `peaks.narrowPeak` — peaks called on shifted insertions (reproducible peak calling with MACS3).
@@ -117,7 +114,7 @@ Once it is done running, you will find the following inside your `workspace`:
       - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction of nucleosome-free fragments (1-147 bp)
       - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over the average number of shifted insertions at TSS flanks
       - `frip` - the fraction of fragments overlapping peaks (computed on the pseudobulk peaks)
-2) `analysis_accession_qc_reports/` — this directory will contain one QC file per analysis accession named `${analysis_accession}_per_cell_qc.tsv`. This QC file contains one row per barcode that appeared in the analysis accession fragment file or RNA counts matrix. Not every barcode is guaranteed to be a real annotated cell, however. The QC columns are:
+3) `analysis_accession_qc_reports/` — this directory will contain one QC file per analysis accession named `${analysis_accession}_per_cell_qc.tsv`. This QC file contains one row per barcode that appeared in the analysis accession fragment file or RNA counts matrix. Not every barcode is guaranteed to be a real annotated cell, however. The QC columns are:
     - `analysis_accession` - the analysis accession the barcode came from
     - `barcode` - the barcode
     - `annotated` - whether or not this barcode was annotated; may NOT be true for all barcode in this file
@@ -131,11 +128,11 @@ Once it is done running, you will find the following inside your `workspace`:
     - `pct_duplicated_reads` - the percent of ATAC reads that are duplicates
     - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction of nucleosome-free fragments (1-147 bp)
     - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over the average number of shifted insertions at TSS flanks
-3) `pseudobulk_qc.tsv` - this file contains per-pseudobulk QC metrics. The QC metrics are not the mean or median of the corresponding QC metrics from the individual cells in the pseudobulk. Rather, these QC metrics are computed when treating the cluster as a single pseudobulked entity. The columns in this file are:
-    - `pseudobulk` - the name of the pseudobulk
-    - `annotation_level` - the annotation level (the column in the annotation file from which this pseudobulk was derived from)
-    - `annotation` - the annotation itself
-    - `subsample` - the subsample. **NOTE: THIS COLUMN WILL NOT BE PRESENT IF THE `--at_annotation_level` flag is used.**
+4) `pseudobulk_qc.tsv` - this file contains per-pseudobulk QC metrics. The QC metrics are not the mean or median of the corresponding QC metrics from the individual cells in the pseudobulk. Rather, these QC metrics are computed when treating the cluster as a single pseudobulked entity. The columns in this file are:
+    - `directory_name` - the name of the subdirectory in the `pseudobulk/` directory that corresponds to this pseudobulk in the form of `{annotation_ID}-{subsample}`
+    - `pseudobulk` - the name of the pseudobulk in the form of `{cell_name}-{subsample}`
+    - `cell_name` - the cell name itself
+    - `subsample` - the subsample
     - `num_cells` - the number of cells in the pseudobulk
     - `rna_read_count` - the number of RNA reads
     - `gene_count` - the number of unique genes
@@ -170,10 +167,6 @@ The required arguments are:
 - `-sk` - your secret key
 - `-c` - number of CPUs to use for parallelization
 
-You can also use the optional flag:
-
-- `--at_annotation_level` - whether or not to pseudobulk at the annotation level. If not set (the default behavior), pseudobulks will be generated at the annotation x subsample level. If set, pseudobulks will be generated at the annotation level and pooled across subsamples.
-
 The outputs are the outputs of the Download and Pseudobulk pipelines as described above.
 Outputs are the union of the Download and Pseudobulk results described above, created within your `workspace`.
 
@@ -183,9 +176,18 @@ Outputs are the union of the Download and Pseudobulk results described above, cr
 
 Annotations are expected to be tab-separated files with the following properties:
 
-- Required columns: `analysis_accession`, `barcode`, `subsample`, `annotation`.
-- `annotation` is considered to be the primary cell annotation. However, multiple levels of annotations can be specified (which may be relevant for cell subtypes). Any other column beginning with `annotation` will be considered to be another level of annotation and pseudobulks will be made for it.
-- the `subsample` column and no `annotation` column can contain spaces, hyphens (`-`), or other nonstandard characters.
+- Required columns:
+  - `barcode_sample`: The barcode, exactly as you would find it in the fragments file.
+  - `cell_name`: **The primary annotation upon which pseudobulking is performed**.
+  - `cell_description`: A free text description unique to the cell name (does not affect pseudobulking).
+  - `CL_id`: The CLID closest to the cell name (does not affect pseudobulking).
+  - `CL_term_name`: The term name of the CL_id (does not affect pseudobulking).
+  - `subsample`: The subsample from which the cell came from. **Pseudobulking occurs at the `cell_name` x `subsample` level**.
+  - `analysis_set_accession`: The accession of the analysis set. This cell's barcode_sample will be looked for in the fragment file corresponding to the `analysis_set_accession`.
+- Annotation file format requirements:
+  - The annotation file **must be a .tsv file**.
+  - No column values should contain tabs (otherwise, file parsing will fail).
+  - The `subsample` column must contain 
 
 ---
 

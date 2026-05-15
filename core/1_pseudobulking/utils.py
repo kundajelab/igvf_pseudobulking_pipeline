@@ -5,24 +5,33 @@ import pandas as pd
 
 def load_metadata(metadata_loc):
     df = pd.read_csv(metadata_loc, sep="\t")
-    assert "analysis_accession" in df.columns, "metadata must contain 'analysis_accession' column"
-    assert "barcode" in df.columns, "metadata must contain 'barcode' column"
-    assert "annotation" in df.columns, "metadata must contain 'annotation' column"
+    # REQUIRED COLUMNS - barcode_sample, cell_name, cell_description, CL_id, CL_term_name, subsample, analysis_set_accession
+    assert "barcode_sample" in df.columns, "metadata must contain 'barcode_sample' column"
+    assert "cell_name" in df.columns, "metadata must contain 'cell_name' column"
+    assert "cell_description" in df.columns, "metadata must contain 'cell_description' column"
+    assert "CL_id" in df.columns, "metadata must contain 'CL_id' column"
+    assert "CL_term_name" in df.columns, "metadata must contain 'CL_term_name' column"
     assert "subsample" in df.columns, "metadata must contain 'subsample' column"
-    assert all(["-" not in x for x in df["subsample"].unique().tolist()]), "'subsample' column cannot contain '-' chracter"
-    for c in df.columns:
-        if c.startswith("annotation"):
-            annotations_c = df[c].unique().tolist()
-            assert all(["-" not in x for x in annotations_c]), f"'{c}' column cannot contain '-' character"
+    assert "analysis_set_accession" in df.columns, "metadata must contain 'analysis_set_accession' column"
+    # COLUMN STRUCTURE REQUIREMENTS
+    # TODO: SUBSAMPLE CANNOT CONTAIN HYPHENS OR CHARACTERS THAT WOULD BREAK FILE NAMING
+
+    # RETURN
     return df
 
 
-def get_pseudobulk_name(annotation_type, annotation, subsample, at_annotation_level):
-    if at_annotation_level:
-        pseudobulk_name = f"{annotation_type}-{annotation}"
-    else:
-        pseudobulk_name = f"{annotation_type}-{annotation}-{subsample}"
-    return pseudobulk_name
+def map_cell_names_to_annotations(metadata_df, data_dir):
+    # Cell name to annotation mapping
+    cell_name_to_annotation_dict = {x: f"annotation_{i}" for i, x in enumerate(sorted(metadata_df["cell_name"].unique()))}
+    # Map cell names to annotations in metadata_df
+    metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
+    # Save mapping to file
+    cell_name_to_annotation_df = pd.DataFrame()
+    cell_name_to_annotation_df["cell_name"] = list(cell_name_to_annotation_dict.keys())
+    cell_name_to_annotation_df["annotation"] = list(cell_name_to_annotation_dict.values())
+    cell_name_to_annotation_df.to_csv(f"{data_dir}/cell_name_to_annotation_mapping.tsv", sep="\t", index=False)
+    # Return
+    return metadata_df
 
 
 def load_tss_locs(tss_locs_loc):

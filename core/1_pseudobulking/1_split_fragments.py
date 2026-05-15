@@ -7,28 +7,22 @@ import gzip
 import numpy as np
 import pandas as pd
 
-from utils import load_metadata, get_pseudobulk_name, load_tss_locs, check_tss_overlap
+from utils import load_metadata, load_tss_locs, check_tss_overlap, map_cell_names_to_annotations
 
 
 ##################
 # MAIN FUNCTIONS #
 ##################
-def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annotation_level, chr_sizes_loc, tss_locs_loc):
+def process_fragments_file(fragments_file_name, data_dir, metadata_loc, chr_sizes_loc, tss_locs_loc):
     # Load metadata
     metadata_df = load_metadata(metadata_loc)
+    # Cell name/annotation mapping
+    metadata_df = map_cell_names_to_annotations(metadata_df, data_dir)
     # Subset metadata to current analysis accession (fragment file name)
-    metadata_df = metadata_df[metadata_df["analysis_accession"] == fragments_file_name]
-    # Get annotation columns
-    annotation_columns = [x for x in metadata_df.columns if x.startswith("annotation")]
+    metadata_df = metadata_df[metadata_df["analysis_accession"] == fragments_file_name].copy()
     # Compute barcodes --> annotation mapping
-    pseudobulks = set() # {annotation_type}-{annotation}-{subsample}
-    barcodes_to_pseudobulks = dict()
-    for _, row in metadata_df.iterrows():
-        row_barcode = row["barcode"]
-        row_sample = row["subsample"]
-        row_pseudobulks = [get_pseudobulk_name(x, row[x], row_sample, at_annotation_level) for x in annotation_columns]
-        barcodes_to_pseudobulks[row_barcode] = row_pseudobulks
-        pseudobulks.update(row_pseudobulks)
+    barcodes_to_pseudobulks = {row["barcode"]: f"{row['annotation']}-{row['subsample']}" for _, row in metadata_df.iterrows()}
+    pseudobulks = set(barcodes_to_pseudobulks.values()) # {annotation}-{subsample}
     # Get allowed chromosomes
     chr_sizes_df = pd.read_csv(chr_sizes_loc, sep="\t", names=["chr", "size"])
     allowed_chrs = set(chr_sizes_df["chr"].unique().tolist())
@@ -87,27 +81,26 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
             if chro not in allowed_chrs:
                 continue
             # Put line into new pseudobulks
-            line_pseudobulks = barcodes_to_pseudobulks.get(barcode, None)
-            if line_pseudobulks is None:
+            line_pseudobulk = barcodes_to_pseudobulks.get(barcode, None)
+            if line_pseudobulk is None:
                 continue
             else:
                 barcode_qc["annotated"] = True
-                for pseudobulk in line_pseudobulks:
-                    # Write fragment to fragments
-                    output_file_handles["fragments"][pseudobulk].write(line)
-                    # Get start/end insertions
-                    start_insertion_line = f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{1}\n"
-                    end_insertion_line = f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{1}\n"
-                    # Write insertions to pseudorepT
-                    output_file_handles["pseudorepT"][pseudobulk].write(start_insertion_line)
-                    output_file_handles["pseudorepT"][pseudobulk].write(end_insertion_line)
-                    # Write insertions to pseudorep1/2
-                    if random.random() < 0.5:
-                        output_file_handles["pseudorep1"][pseudobulk].write(start_insertion_line)
-                        output_file_handles["pseudorep1"][pseudobulk].write(end_insertion_line)
-                    else:
-                        output_file_handles["pseudorep2"][pseudobulk].write(start_insertion_line)
-                        output_file_handles["pseudorep2"][pseudobulk].write(end_insertion_line)
+                # Write fragment to fragments
+                output_file_handles["fragments"][line_pseudobulk].write(line)
+                # Get start/end insertions
+                start_insertion_line = f"{chro}\t{start_shifted}\t{start_shifted+1}\t{barcode}\t{1}\n"
+                end_insertion_line = f"{chro}\t{end_shifted-1}\t{end_shifted}\t{barcode}\t{1}\n"
+                # Write insertions to pseudorepT
+                output_file_handles["pseudorepT"][line_pseudobulk].write(start_insertion_line)
+                output_file_handles["pseudorepT"][line_pseudobulk].write(end_insertion_line)
+                # Write insertions to pseudorep1/2
+                if random.random() < 0.5:
+                    output_file_handles["pseudorep1"][line_pseudobulk].write(start_insertion_line)
+                    output_file_handles["pseudorep1"][line_pseudobulk].write(end_insertion_line)
+                else:
+                    output_file_handles["pseudorep2"][line_pseudobulk].write(start_insertion_line)
+                    output_file_handles["pseudorep2"][line_pseudobulk].write(end_insertion_line)
     end_time = time.time()
     print(f"({fragments_file_name}) Time taken: {end_time-start_time:.3f} seconds for {num_lines} lines ({num_lines/(end_time-start_time):.3f} lines/second)")
     # Close outfiles
@@ -134,7 +127,7 @@ def process_fragments_file(fragments_file_name, data_dir, metadata_loc, at_annot
         tss_insertions = barcode_qc["tss_insertions"]
         tss_insertions_flank_mean = (np.sum(tss_insertions[:100]) + np.sum(tss_insertions[-100:]))/200
         tss_insertions_center = np.mean(tss_insertions[TSS_half_window-TSS_half_smooth_window:TSS_half_window+TSS_half_smooth_window+1])
-        qc_row["tss_enrichment"] = tss_insertions_center/(tss_insertions_flank_mean + 0.1) # add 0.1 like snapatac2 to avoid division by zero
+        qc_row["tss_enrichment"] = tss_insertions_center/(tss_insertions_flank_mean + 0.1) # NOTE: add 0.1 like snapatac2 to avoid division by zero
         # Raw values
         qc_row["raw-num_reads"] = barcode_qc["num_reads"]
         qc_row["raw-num_dup_reads"] = barcode_qc["num_dup_reads"]
@@ -156,22 +149,14 @@ def main():
     parser.add_argument('-f', '--fragments', type=str, required=True, help='Input fragments file path')
     parser.add_argument('-d', '--datadir', type=str, required=True, help='Data directory')
     parser.add_argument('-m', '--metadata', type=str, required=True, help='Input annotations metadata file path')
-    parser.add_argument('-a', '--at_annotation_level', type=str, required=True, help='At annotation level flag')
     parser.add_argument('-c', '--chr_sizes', type=str, required=True, help='Chromosomes size/order file path')
     parser.add_argument('-t', '--tss_locs', type=str, required=True, help="TSS locations file")
 
     # Parse the arguments
     args = parser.parse_args()
 
-    if args.at_annotation_level == "True":
-        args.at_annotation_level = True
-    elif args.at_annotation_level == "False":
-        args.at_annotation_level = False
-    else:
-        raise ValueError("at_annotation_level must be 'True' or 'False'")
-
     # Process file
-    process_fragments_file(args.fragments, args.datadir, args.metadata, args.at_annotation_level, args.chr_sizes, args.tss_locs)
+    process_fragments_file(args.fragments, args.datadir, args.metadata, args.chr_sizes, args.tss_locs)
     
 
 if __name__ == "__main__":

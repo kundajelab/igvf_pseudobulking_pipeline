@@ -12,9 +12,15 @@ from utils import load_metadata
 ##################
 # MAIN FUNCTIONS #
 ##################
-def aggregate_files(data_dir, metadata_loc, at_annotation_level):
+def aggregate_files(data_dir, metadata_loc):
     # Load metadata
     metadata_df = load_metadata(metadata_loc)
+    # Update metadata with annotation mapping
+    annotation_file = f"{data_dir}/cell_name_to_annotation_mapping.tsv"
+    annotation_df = pd.read_csv(annotation_file, sep="\t")
+    cell_name_to_annotation_dict = dict(zip(annotation_df["cell_name"], annotation_df["annotation"]))
+    annotation_to_cell_name_revdict = {v: k for k, v in cell_name_to_annotation_dict.items()}
+    metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
     print(metadata_df)
     # Load combined atac qc (generated per analysis accession, not by pseudobulk)
     atac_combined_qc_list = []
@@ -32,12 +38,8 @@ def aggregate_files(data_dir, metadata_loc, at_annotation_level):
     pseudobulk_qc_rows = []
     for pseudobulk in pseudobulks:
         print(f"Processing pseudobulk: {pseudobulk}")
-        if at_annotation_level:
-            annotation_type, annotation_value = tuple(pseudobulk.split("-"))
-            metadata_pseudobulk_df = metadata_df[metadata_df[annotation_type] == annotation_value]
-        else:
-            annotation_type, annotation_value, subsample = tuple(pseudobulk.split("-"))
-            metadata_pseudobulk_df = metadata_df[(metadata_df[annotation_type] == annotation_value) & (metadata_df["subsample"] == subsample)]
+        annotation_value, subsample = tuple(pseudobulk.split("-"))
+        metadata_pseudobulk_df = metadata_df[(metadata_df["annotation"] == annotation_value) & (metadata_df["subsample"] == subsample)]
         # Create pseudobulk directory
         os.makedirs(f"{data_dir}/pseudobulks/{pseudobulk}", exist_ok=True)
         # Move ATAC files
@@ -78,11 +80,11 @@ def aggregate_files(data_dir, metadata_loc, at_annotation_level):
                 f.write(f"WARNING: ATAC {len(pseudobulk_combined_qc[pseudobulk_combined_qc['found_in_atac']])} and RNA {len(pseudobulk_combined_qc[pseudobulk_combined_qc['found_in_rna']])} pseudobulk cell sets do not match!\n")
         # Compute pseudobulk QC summary
         pseudobulk_qc_summary = dict()
-        pseudobulk_qc_summary["pseudobulk"] = pseudobulk
-        pseudobulk_qc_summary["annotation_level"] = annotation_type
-        pseudobulk_qc_summary["annotation"] = annotation_value
-        if not at_annotation_level:
-            pseudobulk_qc_summary["subsample"] = subsample
+        pseudobulk_qc_summary["directory_name"] = pseudobulk
+        cell_name = annotation_to_cell_name_revdict[annotation_value]
+        pseudobulk_qc_summary["pseudobulk"] = f"{annotation_value}-{subsample}"
+        pseudobulk_qc_summary["cell_name"] = cell_name
+        pseudobulk_qc_summary["subsample"] = subsample
         pseudobulk_qc_summary["num_cells"] = pseudobulk_combined_qc.shape[0]
         # RNA
         pseudobulk_rna_exp = pd.read_csv(f"{data_dir}/pseudobulks/{pseudobulk}/pseudobulk_expression.tsv", sep="\t")
@@ -140,20 +142,12 @@ def main():
     # Define the expected flags
     parser.add_argument('-d', '--datadir', type=str, required=True, help='Data directory')
     parser.add_argument('-m', '--metadata', type=str, required=True, help='Input annotations metadata file path')
-    parser.add_argument('-a', '--at_annotation_level', type=str, required=True, help='At annotation level flag')
 
     # Parse the arguments
     args = parser.parse_args()
 
-    if args.at_annotation_level == "True":
-        args.at_annotation_level = True
-    elif args.at_annotation_level == "False":
-        args.at_annotation_level = False
-    else:
-        raise ValueError("at_annotation_level must be 'True' or 'False'")
-
     # Process file
-    aggregate_files(args.datadir, args.metadata, args.at_annotation_level)
+    aggregate_files(args.datadir, args.metadata)
     
 
 if __name__ == "__main__":

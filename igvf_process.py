@@ -35,8 +35,6 @@ def main():
     pseudobulk_parser.add_argument("-a", required=True, help="Annotation file")
     pseudobulk_parser.add_argument("-s", required=True, help="Species")
     pseudobulk_parser.add_argument("-c", required=True, help="Number of CPUs")
-    pseudobulk_parser.add_argument("--at_annotation_level", action="store_true", help="If set, pseudobulk at annotation level instead of annotation x subsample level")
-
     # full
     full_parser = subparsers.add_parser("full", help="Download + pseudobulk data given uniform annotation file")
     full_parser.add_argument("-a", required=True, help="Annotation file")
@@ -45,7 +43,6 @@ def main():
     full_parser.add_argument("-ak", required=True, help="Access key")
     full_parser.add_argument("-sk", required=True, help="Secret key")
     full_parser.add_argument("-c", required=True, help="Number of CPUs")
-    full_parser.add_argument("--at_annotation_level", action="store_true", help="If set, pseudobulk at annotation level instead of annotation x subsample level")
 
     # decipher
     decipher_parser = subparsers.add_parser("decipher", help="Decipher lane to accession map given non-uniform annotation file")
@@ -72,7 +69,7 @@ def main():
         chr_sizes, blacklist_file, tss_file, gene_info_file = get_species_files(args.s)
 
         pseudobulk_path = os.path.join(scriptdir, "core", "1_pseudobulking", "PIPELINE.sh")
-        pseudobulk_command = ["bash", pseudobulk_path, args.w, args.a, str(args.at_annotation_level), chr_sizes, blacklist_file, tss_file, gene_info_file, args.c]
+        pseudobulk_command = ["bash", pseudobulk_path, args.w, args.a, chr_sizes, blacklist_file, tss_file, gene_info_file, args.c]
         subprocess.run(pseudobulk_command)
     
     elif args.command == "full":
@@ -86,7 +83,7 @@ def main():
         chr_sizes, blacklist_file, tss_file, gene_info_file = get_species_files(args.s)
 
         pseudobulk_path = os.path.join(scriptdir, "core", "1_pseudobulking", "PIPELINE.sh")
-        pseudobulk_command = ["bash", pseudobulk_path, args.w, args.a, str(args.at_annotation_level), chr_sizes, blacklist_file, tss_file, gene_info_file, args.c]
+        pseudobulk_command = ["bash", pseudobulk_path, args.w, args.a, chr_sizes, blacklist_file, tss_file, gene_info_file, args.c]
         subprocess.run(pseudobulk_command)
     
     elif args.command == "decipher":

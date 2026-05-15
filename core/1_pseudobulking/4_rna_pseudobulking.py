@@ -7,15 +7,20 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 
-from utils import load_metadata, get_pseudobulk_name
+from utils import load_metadata
 
 
 ##################
 # MAIN FUNCTIONS #
 ##################
-def process_h5ad(data_dir, metadata_loc, at_annotation_level, geneinfo_loc):
+def process_h5ad(data_dir, metadata_loc, geneinfo_loc):
     # Load metadata
     metadata_df = load_metadata(metadata_loc)
+    # Update metadata with annotation mapping
+    annotation_file = f"{data_dir}/cell_name_to_annotation_mapping.tsv"
+    annotation_df = pd.read_csv(annotation_file, sep="\t")
+    cell_name_to_annotation_dict = dict(zip(annotation_df["cell_name"], annotation_df["annotation"]))
+    metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
     # Load gene information
     gene_ref = pd.read_csv(geneinfo_loc, index_col=0)
     # Iterate through h5ads
@@ -24,7 +29,7 @@ def process_h5ad(data_dir, metadata_loc, at_annotation_level, geneinfo_loc):
     for x in os.listdir(f"{data_dir}/raw_rna"):
         # Load h5ads
         x_name = x.split(".")[0]
-        metadata_df_x = metadata_df[metadata_df["analysis_accession"] == x_name]
+        metadata_df_x = metadata_df[metadata_df["analysis_accession"] == x_name].copy()
         adata = ad.read_h5ad(f"{data_dir}/raw_rna/{x}")
         adata.obs['analysis_accession'] = x_name
         adata.obs['barcode'] = adata.obs.index
@@ -51,19 +56,15 @@ def process_h5ad(data_dir, metadata_loc, at_annotation_level, geneinfo_loc):
         # Save QC for all cells in analysis accession
         adata.obs.to_csv(f"{data_dir}/rna_qc_reports/{x_name}-scRNA_all_cells_QC_metrics.csv", sep="\t", index=False)
         # Go through annotation columns --> make pseudobulks
-        for c in metadata_df_x.columns:
-            if not c.startswith("annotation"):
-                continue
-            for c_value in metadata_df_x[c].unique().tolist():
-                metadata_df_xc = metadata_df_x[metadata_df_x[c] == c_value]
-                for s in metadata_df_xc["subsample"].unique().tolist():
-                    metadata_df_xcs = metadata_df_xc[metadata_df_xc["subsample"] == s]
-                    pseudobulk_name = get_pseudobulk_name(c, c_value, s, at_annotation_level)
-                    barcodes_xcs = set(metadata_df_xcs["barcode"])
-                    adata_xcs = adata[adata.obs_names.isin(barcodes_xcs), :].copy()
-                    pseudobulk_adatas[pseudobulk_name].append(adata_xcs)
-                    pseudobulk_qcs[pseudobulk_name].append(adata_xcs.obs)
-    # aggregate across pseudobulks and save
+        for c in metadata_df_x["annotation"].unique().tolist():
+            metadata_df_xc = metadata_df_x[metadata_df_x["annotation"] == c]
+            for s in metadata_df_xc["subsample"].unique().tolist():
+                metadata_df_xcs = metadata_df_xc[metadata_df_xc["subsample"] == s]
+                pseudobulk_name = f"{c}-{s}"
+                barcodes_xcs = set(metadata_df_xcs["barcode"])
+                adata_xcs = adata[adata.obs_names.isin(barcodes_xcs), :].copy()
+                pseudobulk_adatas[pseudobulk_name].append(adata_xcs)
+                pseudobulk_qcs[pseudobulk_name].append(adata_xcs.obs)
     print("concat...")
     for p, x in pseudobulk_adatas.items():
         print(p)
@@ -93,21 +94,13 @@ def main():
     # Define the expected flags
     parser.add_argument('-d', '--datadir', type=str, required=True, help='Data directory')
     parser.add_argument('-m', '--metadata', type=str, required=True, help='Input annotations metadata file path')
-    parser.add_argument('-a', '--at_annotation_level', type=str, required=True, help='At annotation level flag')
     parser.add_argument('-g', '--geneinfo', type=str, required=True, help='Gene info file path')
 
     # Parse the arguments
     args = parser.parse_args()
 
-    if args.at_annotation_level == "True":
-        args.at_annotation_level = True
-    elif args.at_annotation_level == "False":
-        args.at_annotation_level = False
-    else:
-        raise ValueError("at_annotation_level must be 'True' or 'False'")
-
     # Process file
-    process_h5ad(args.datadir, args.metadata, args.at_annotation_level, args.geneinfo)
+    process_h5ad(args.datadir, args.metadata, args.geneinfo)
     
 
 if __name__ == "__main__":
