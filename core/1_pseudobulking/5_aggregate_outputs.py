@@ -29,7 +29,7 @@ def aggregate_files(data_dir, metadata_loc):
         analysis_accession = x.split(".")[0]
         atac_combined_qc_list.append(pd.read_csv(f"{data_dir}/atac_qc_reports/{x}", sep="\t"))
         tss_list.append(np.load(f"{data_dir}/atac_qc_reports/{analysis_accession}_tss_matrix.npy"))
-    atac_combined_qc = pd.concat(atac_combined_qc_list, axis=0)
+    atac_combined_qc = pd.concat(atac_combined_qc_list, axis=0, ignore_index=True)
     print(atac_combined_qc)
     tss_matrix = np.vstack(tss_list)
     # Find all pseudobulks (use pseudobulked RNA files as proxy to find pseudobulks)
@@ -152,4 +152,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
