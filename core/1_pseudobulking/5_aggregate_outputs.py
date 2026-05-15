@@ -77,12 +77,12 @@ def aggregate_files(data_dir, metadata_loc):
         if not (len(pseudobulk_rna_qc) == len(pseudobulk_atac_qc) == len(pseudobulk_combined_qc)):
             print("!!!!! WARNING: ATAC and RNA pseudobulk cell sets do not match !!!!!")
             with open(f"{data_dir}/pseudobulks/{pseudobulk}/ATAC_RNA_MISMATCH.log", 'w') as f:
-                f.write(f"WARNING: ATAC {len(pseudobulk_combined_qc[pseudobulk_combined_qc['found_in_atac']])} and RNA {len(pseudobulk_combined_qc[pseudobulk_combined_qc['found_in_rna']])} pseudobulk cell sets do not match!\n")
+                f.write(f"WARNING: ATAC {len(pseudobulk_atac_qc)} and RNA {len(pseudobulk_rna_qc)} pseudobulk cell sets do not match!\n")
         # Compute pseudobulk QC summary
         pseudobulk_qc_summary = dict()
         pseudobulk_qc_summary["directory_name"] = pseudobulk
         cell_name = annotation_to_cell_name_revdict[annotation_value]
-        pseudobulk_qc_summary["pseudobulk"] = f"{annotation_value}-{subsample}"
+        pseudobulk_qc_summary["pseudobulk"] = f"{cell_name}-{subsample}"
         pseudobulk_qc_summary["cell_name"] = cell_name
         pseudobulk_qc_summary["subsample"] = subsample
         pseudobulk_qc_summary["num_cells"] = pseudobulk_combined_qc.shape[0]
@@ -119,7 +119,7 @@ def aggregate_files(data_dir, metadata_loc):
     atac_combined_qc = atac_combined_qc[[x for x in atac_combined_qc.columns if not x.startswith("raw-")]] # NOTE: don't need raw columns after pseudobulk processing
     for accession in metadata_df['analysis_set_accession'].unique().tolist():
         print(f"Processing analysis accession: {accession}")
-        atac_qc = atac_combined_qc[atac_combined_qc['analysis_accession'] == accession].copy()
+        atac_qc = atac_combined_qc[atac_combined_qc['analysis_set_accession'] == accession].copy()
         atac_qc["found_in_atac"] = True
         print(atac_qc)
         rna_qc = pd.read_csv(f"{data_dir}/rna_qc_reports/{accession}-scRNA_all_cells_QC_metrics.csv", sep="\t")

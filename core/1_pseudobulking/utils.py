@@ -1,5 +1,3 @@
-import os
-
 from numba import njit
 import numpy as np
 import pandas as pd
@@ -22,11 +20,6 @@ def load_metadata(metadata_loc):
 
 
 def map_cell_names_to_annotations(metadata_df, data_dir):
-    if os.path.exists(f"{data_dir}/cell_name_to_annotation_mapping.tsv"):
-        cell_name_to_annotation_mapping_df = pd.read_csv(f"{data_dir}/cell_name_to_annotation_mapping.tsv", sep="\t")
-        cell_name_to_annotation_dict = dict(zip(cell_name_to_annotation_mapping_df["cell_name"], cell_name_to_annotation_mapping_df["annotation"]))
-        metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
-        return metadata_df
     # Cell name to annotation mapping
     cell_name_to_annotation_dict = {x: f"annotation_{i}" for i, x in enumerate(sorted(metadata_df["cell_name"].unique()))}
     # Map cell names to annotations in metadata_df

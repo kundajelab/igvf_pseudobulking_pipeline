@@ -74,7 +74,7 @@ def main():
     
     elif args.command == "full":
         annotation_df = pd.read_csv(args.a, sep="\t")
-        annotation_list = ",".join(annotation_df["analysis_accession"].unique().tolist())
+        annotation_list = ",".join(annotation_df["analysis_set_accession"].unique().tolist())
 
         download_path = os.path.join(scriptdir, "core", "0_download_data", "PIPELINE.sh")
         download_command = ["bash", download_path, args.w, annotation_list, args.ak, args.sk]
