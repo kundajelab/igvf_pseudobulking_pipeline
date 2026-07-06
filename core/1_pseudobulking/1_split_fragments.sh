@@ -13,7 +13,7 @@ raw_frags_dir="${datadir}/raw_fragments"
 scriptdir="$(dirname "$(realpath $0)")"
 
 find ${raw_frags_dir} -name "*.bed.gz" | xargs -I {} basename {} .bed.gz \
-| xargs -I {} -P ${parallel} python ${scriptdir}/1_split_fragments.py -d ${datadir} -f {} -m "${metadata_loc}" -a "${at_annotation_level}" -c "${chr_order_file}" -t "${tss_file}"
+| xargs -I {} -P ${parallel} python ${scriptdir}/1_split_fragments.py -d ${datadir} -f {} -m "${metadata_loc}" -c "${chr_order_file}" -t "${tss_file}"
 
 # Validate: every raw fragment file should have a corresponding QC report
 failed=0
