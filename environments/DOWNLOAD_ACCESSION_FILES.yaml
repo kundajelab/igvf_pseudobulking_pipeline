@@ -1,0 +1,12 @@
+name: download-accession-files
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - conda-forge::aria2=1.37.0
+  - conda-forge::curl=8.20.0
+  - conda-forge::python>3.11,<3.12
+  - conda-forge::pip=26.1.1
+  - pip:
+      - -e ../download_accession_files/.

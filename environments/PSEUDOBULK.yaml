@@ -1,0 +1,11 @@
+name: pseudobulk
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - conda-forge::python=3.14.5
+  - conda-forge::python-freethreading
+  - conda-forge::pip=26.1.1
+  - pip:
+      - -e ../pseudobulk/.

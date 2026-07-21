@@ -1,0 +1,59 @@
+[project]
+name = "pseudobulk"
+version = "2.0.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Salil Deshpande", email = "salil512@stanford.edu" },
+    { name = "Ted Brookings", email = "ted.brookings@stanford.edu" }
+]
+requires-python = ">=3.14.0"
+dependencies = [
+    "anndata==0.12.16",
+    "cython>=3.2.5",
+    "defopt>=7.0.0",
+    "numpy>=2.4.4",
+    "pandas>=2.3.0,<3",
+    "psutil>=7.2.2",
+    "scanpy>=1.12.1",
+    "scipy>=1.17.1",
+    "setuptools>=82.0.1",
+]
+
+[project.scripts]
+pseudobulk = "pseudobulk:main"
+
+[build-system]
+requires = ["setuptools>=82.0.0", "cython>=3.2.5"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+ext-modules = [
+    {name = "pseudobulk.tss", sources = ["src/pseudobulk/tss.pyx"]}
+]
+
+[tool.pytest.ini_options]
+# The zarr package registers a pytest plugin that imports google_crc32c before
+# this filterwarnings option takes effect, so also set PYTHONWARNINGS (see
+# tool.poe.tasks.test) to catch the warning during pytest's plugin autoload.
+filterwarnings = [
+    "ignore:As the c extension couldn't be imported:RuntimeWarning",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.poe.tasks]
+lint = "ruff check --fix ."
+format = "ruff format ."
+types = "ty check ."
+checks = ["lint", "format", "types", "test"]
+[tool.poe.tasks.test]
+shell = "PYTHON_GIL=1 PYTHONWARNINGS=\"ignore:As the c extension couldn't be imported:RuntimeWarning\" pytest ."
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.15.12",
+    "ty>=0.0.37",
+]

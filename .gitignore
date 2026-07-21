@@ -1,0 +1,20 @@
+__pycache__/
+.nextflow/
+.nextflow*
+.venv/
+
+.vscode
+workspace/
+.ruff_cache/
+.DS_Store
+.pixi/
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+build/
+*.egg-info/
+*.so
+*.c
+
+# files from igvf_utils
+IU_Logs/

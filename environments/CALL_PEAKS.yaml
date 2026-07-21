@@ -1,0 +1,11 @@
+name: call_peaks
+channels:
+  - conda-forge
+  - bioconda
+  - nodefaults
+dependencies:
+  - bioconda::bedtools=2.31.1
+  - bioconda::macs3=3.0.4
+  - bioconda::ucsc-bedclip=482
+  - bioconda::ucsc-bedgraphtobigwig=482
+  - bioconda::htslib=1.23.1
