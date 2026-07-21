@@ -1,0 +1,15 @@
+[workspace]
+authors = ["Ted Brookings <ted.brookings@googlemail.com>"]
+channels = ["conda-forge", "bioconda", "nodefaults", "https://conda.anaconda.org/bioconda"]
+name = "call_peaks"
+platforms = ["linux-64", "osx-64", "osx-arm64", "linux-aarch64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+bedtools = { version = "2.31.1.*", channel = "bioconda" }
+macs3 = { version = "3.0.4.*", channel = "bioconda" }
+ucsc-bedclip = { version = "482.*", channel = "bioconda" }
+ucsc-bedgraphtobigwig = { version = "482.*", channel = "bioconda" }
+htslib = { version = "1.23.1.*", channel = "bioconda" }

@@ -1,0 +1,29 @@
+[project]
+name = "igvf-portal"
+version = "2.0.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Ted Brookings", email = "ted.brookings@googlemail.com" }
+]
+requires-python = ">=3.14.6"
+dependencies = [
+    "defopt>=7.0.0",
+    "igvf-utils",
+]
+
+[project.scripts]
+igvf-portal = "igvf_portal:main"
+
+[build-system]
+requires = ["uv_build>=0.11.15,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+igvf-utils = { git = "https://github.com/IGVF-DACC/igvf_utils.git" }
+
+[tool.poe.tasks]
+lint = "ruff check --fix src/igvf_portal"
+format = "ruff format src/igvf_portal"
+types = "ty check src/igvf_portal"
+checks = ["lint", "format", "types"]

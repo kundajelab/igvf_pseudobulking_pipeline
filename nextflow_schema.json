@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/nextflow-skeleton//nextflow_schema.json",
+  "title": "nextflow-skeleton pipeline parameters",
+  "description": "Simple workflow for starting a project",
+  "type": "object",
+  "properties": {
+    "metadata_file": {
+      "type": "string",
+      "format": "file-path",
+      "description": "TSV with metadata for performing pseudobulking, with columns 'analysis_accession', 'barcode', 'subsample', 'subsample_orig', and 'annotation'"
+    },
+    "principal_analysis" : {
+      "type": "string",
+      "description": "Comma-separated list of principal analyses to associate results with for IGVF upload. Inferred if not supplied.",
+      "default": null
+    },
+    "igvf_mode": {
+      "type": "string",
+      "description": "IGVF mode for upload. Can be 'prod', 'staging', or 'sandbox'.",
+      "default": "prod",
+      "enum": ["prod", "staging", "sandbox"]
+    },
+    "igvf_dry_run": {
+      "type": "boolean",
+      "description": "If true, do not actually upload to IGVF, the upload script just checks for schema compliance.",
+      "default": true
+    },
+    "accessions": {
+      "type": "string",
+      "description": "Comma-separated list of accessions to process. Omit to use all accessions from metadata file."
+    },
+    "species": {
+      "type": "string",
+      "default": "human",
+      "enum": ["human", "mouse"],
+      "description": "Species with pre-built data files to process"
+    },
+    "num_top_peaks": {
+      "type": "integer",
+      "default": 300000,
+      "description": "Number of most significant peaks to keep, as found my MACS3"
+    },
+    "min_overlap": {
+      "type": "number",
+      "default": 0.5,
+      "description": "Minimum overlap for peaks in bedtools intersect"
+    },
+    "igvf_metadata_url": {
+      "type": "string",
+      "format": "file-path",
+      "default": "https://api.data.igvf.org/analysis-sets",
+      "description": "URL of IGVF metadata with file paths for each accession"
+    },
+    "igvf_fragments_url": {
+      "type": "string",
+      "format": "file-path",
+      "default": "https://api.data.igvf.org/tabular-files",
+      "description": "URL of IGVF fragments files for each accession"
+    },
+    "igvf_counts_matrix_url": {
+      "type": "string",
+      "format": "file-path",
+      "default": "https://api.data.igvf.org/matrix-files",
+      "description": "URL of IGVF counts matrix files for each accession"
+    },
+    "workspace": {
+      "type": "string",
+      "format": "directory-path",
+      "default": "output",
+      "description": "folder to store all pipeline temporary files and outputs"
+    },
+    "publish_mode": {
+      "type": "string",
+      "default": "copy",
+      "enum": ["copy", "link", "move", "symlink", "copyNoFollow", "rellink"],
+      "description": "Mode for publishing output files. See nextflow documentation for publishDir for more details."
+    },
+    "split_fragments_cpus": {
+      "type": "integer",
+      "default": 6,
+      "description": "How many CPUS should SPLIT_FRAGMENTS jobs use? In a local executor, there is a lot of contention for file IO, so 6 is max throughput."
+    },
+    "split_fragments_parallel": {
+      "type": "boolean",
+      "default": null,
+      "description": "Whether to split fragments files in parallel. If null, will default to false for local execution and true for cluster execution, since it will typically be faster to run in parallel on the cluster with less IO contention, but slower locally with more contention."
+    },
+    "slurm_queue": {
+      "type": "string",
+      "default": "normal",
+      "description": "Queue for launching SLURM jobs."
+    },
+    "oom_max_retries": {
+      "type": "number",
+      "default": 2,
+      "description": "Max number of retries due to out-of-memory errors."
+    },
+    "preemptible_max_retries": {
+      "type": "number",
+      "default": 5,
+      "description": "Max number of retries due to cluster preemption."
+    }
+  },
+  "required": ["metadata_file"]
+}

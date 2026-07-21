@@ -1,0 +1,36 @@
+[project]
+authors = [{name = "Ted Brookings", email = "ted.brookings@googlemail.com"}]
+dependencies = ["defopt>=7.0.0", "requests==2.24.0"]
+name = "download_accession_files"
+requires-python = ">= 3.11"
+version = "2.0.0"
+
+[project.scripts]
+get-url = "download_accession_files:main"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge", "bioconda", "nodefaults"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "linux-aarch64"]
+
+[tool.pixi.pypi-dependencies]
+download_accession_files = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+lint = "ruff check --fix ."
+format = "ruff format ."
+types = "ty check ."
+checks = {depends-on = ["lint", "format", "types"]}
+
+[tool.pixi.dependencies]
+aria2 = { version = "1.37.0.*", channel = "conda-forge" }
+curl = { version = "8.20.0.*", channel = "conda-forge" }
+python = { version = ">3.11,<3.12", channel = "conda-forge" }
+ruff = ">=0.15.17,<0.16"
+ty = ">=0.0.48,<0.0.49"
+
+[tool.ruff]
+line-length = 100
