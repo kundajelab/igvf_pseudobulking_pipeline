@@ -62,6 +62,19 @@ while [[ "$#" -ge 1 ]]; do
     esac
 done
 
+function validate_version {
+    version="$1"
+    # validate the version string
+    if [[ ! "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        1>&2 echo "Invalid version: '$version'"
+        1>&2 echo "Version must adhere to semantic versioning: https://semver.org"
+        1>&2 echo "[major].[minor].[patch]" with major, minor, and patch being integers.
+        exit 1
+    fi
+    # remove leading v if present
+    sed 's/^v//' <<< "$version"
+}
+
 command="$1"
 case "$command" in
     "set")
@@ -81,19 +94,6 @@ esac
 if [[ -z "${message:-}" ]]; then
     message="Released version $version"
 fi
-
-function validate_version {
-    version="$1"
-    # validate the version string
-    if [[ ! "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        1>&2 echo "Invalid version: '$version'"
-        1>&2 echo "Version must adhere to semantic versioning: https://semver.org"
-        1>&2 echo "[major].[minor].[patch]" with major, minor, and patch being integers.
-        exit 1
-    fi
-    # remove leading v if present
-    sed 's/^v//' <<< "$version"
-}
 
 "$script_dir/find-projects.sh" \
 | while read -r project type; do
@@ -118,6 +118,7 @@ function validate_version {
     esac
 done
 
+git commit -am "${message}"
 git tag \
     -a "v${version}" \
     -m "${message}" \

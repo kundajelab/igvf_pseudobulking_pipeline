@@ -3,7 +3,7 @@ authors = [{name = "Ted Brookings", email = "ted.brookings@googlemail.com"}]
 dependencies = ["defopt>=7.0.0", "requests==2.24.0"]
 name = "download_accession_files"
 requires-python = ">= 3.11"
-version = "0.1.0"
+version = "2.0.0"
 
 [project.scripts]
 get-url = "download_accession_files:main"
