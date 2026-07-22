@@ -1,24 +1,10 @@
 include { dotenv } from 'plugin/nf-dotenv'
+include { oomMemoryOf ; oomMaxRetriesOf } from './retry.nf'
 
 process PSEUDOBULK_RNA {
-    cpus 4
-        memory {
-        if (task.previousTrace) {
-            def wasOom = task.exitStatus in 137..140
-            wasOom ? task.previousTrace.memory + baseMem : baseMem
-        } else {
-            baseMem
-        }
-    }
-    maxRetries {
-        def wasOom = task.exitStatus in 137..140
-        def previousOomCount = (task.previousTrace.memory / baseMem).round() as Integer
-        task.executor == 'local' || (
-            previousOomCount >= params.max_oom_retries && wasOom
-        ) ?
-        params.oom_max_retries :
-        params.preemptible_max_retries + params.oom_max_retries
-    }
+    cpus { Math.min(4, h5ads.size()) }
+    memory { oomMemoryOf(task, baseMem) }
+    maxRetries { oomMaxRetriesOf(task, baseMem) }
     conda "environments/PSEUDOBULK.yaml"
     container "${dotenv('PSEUDOBULK_IMAGE')}"
     cache "deep"
@@ -47,10 +33,21 @@ process PSEUDOBULK_RNA {
         path("cell_name_to_annotation_mapping.tsv"), emit: cell_name_to_annotation_mapping
 
     script:
-    totalSize = h5ads.sum { h5ad -> h5ad.size() }
-    baseMem = 1.GB + 1.GB * Math.round(totalSize * 1.25 / 2 ** 30)
+    // Memory model, fitted to the measured peak anonymous memory of the whole process tree over 11
+    // runs spanning 1-8 workers and 166 MB - 7.1 GB of input:
+    //
+    //     peak = PARENT_OVERHEAD + RATIO * totalSize + workers * PER_WORKER
+    //
+    // Each worker holds one whole h5ad at a time, so the data-proportional term is the sum of the
+    // sizes of the largest `workers` inputs rather than a multiple of the largest one: the input
+    // sizes are badly skewed, and one big h5ad next to three small ones needs far less than four
+    // big ones. Each worker is its own interpreter (the pool uses processes, not threads) holding
+    // its own gene reference and slimmed metadata, measured at ~460 MB.
+    totalSize = h5ads.collect { h5ad -> h5ad.size() }
+        .sort{ s -> -s }.take(task.cpus).sum()
+    baseMem = 1.MB * ((1024 + 7.5 * totalSize / 2 ** 20 + task.cpus * 512) as long)
     """
-    export PYTHON_GIL=0
+    export PYTHON_GIL=1
     pseudobulk pseudobulk-rna \
         --input input_dir \
         --output-dir . \

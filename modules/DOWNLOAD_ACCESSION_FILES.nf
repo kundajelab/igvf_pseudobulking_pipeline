@@ -15,17 +15,26 @@ process DOWNLOAD_ACCESSION_FILES {
 
     input:
         val(accessions)
+        val(igvf_mode)
     output:
-        path("*.bed.gz"), emit: fragments_files
-        path("*.h5ad"), emit: counts_matrix_files
+        path("*.bed.gz"), optional: true, emit: fragments_files
+        path("*.h5ad"), optional: true, emit: counts_matrix_files
 
     script:
-    input_file = "aria2c_input.txt"
+    aria2c_input_file = "aria2c_input.txt"
     """
     # get the download URLs (already redirected into S3) for files in each accession, and write to an aria2c input file
-    for accession in ${accessions.join(' ')}; do
-        igvf-portal get-url "\$accession" --output "${input_file}"
+    # NOTE: the accessions must be quoted individually. They may be "<input>;<output>" tuples, and an
+    # unquoted ";" would end the for statement rather than being passed through to get-url.
+    for accession in "${accessions.join('" "')}"; do
+        igvf-portal get-url "\$accession" \
+            --output "${aria2c_input_file}" \
+            --igvf-mode "${igvf_mode}"
     done
+    if [[ -z "${aria2c_input_file}" ]]; then
+        1>&2 echo "Did not find any files to download."
+        exit 1
+    fi
 
     # download the files:
     # - get URLs and downloaded file names from the aria2c input_file
@@ -34,7 +43,7 @@ process DOWNLOAD_ACCESSION_FILES {
     # - download at most 8 files at once
     # - respect the system's open file limit
     aria2c \
-        --input-file="${input_file}" \
+        --input-file="${aria2c_input_file}" \
         --max-connection-per-server=16 \
         --split=16 \
         --max-concurrent-downloads=8 \
