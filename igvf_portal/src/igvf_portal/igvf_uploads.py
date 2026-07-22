@@ -11,6 +11,7 @@ from igvf_portal.enums import (
 from igvf_portal.types import (
     Alias,
     PseudobulkId,
+    UploadRow,
 )
 
 
@@ -26,7 +27,7 @@ class IgvfUploadBase(abc.ABC):
     @abc.abstractmethod
     def get_row(
         self, check_path: Path, config: Config, doc_aliases: list[Alias]
-    ) -> dict[str, str] | None: ...
+    ) -> UploadRow | None: ...
 
     """Function to find the right file using match_glob, update or use doc_aliases, and return the resulting TSV row dict."""
 
@@ -113,8 +114,8 @@ class IgvfFile(IgvfUploadBase):
     file_format_specifications: str | None = None
 
     def _get_row(
-        self, check_path: Path, config: Config, **kwargs: str
-    ) -> dict[str, str] | None:
+        self, check_path: Path, config: Config, **kwargs: str | bool
+    ) -> UploadRow | None:
         upload_path = self.get_path(check_path) if check_path.is_dir() else check_path
         if upload_path is None:
             return None
@@ -157,8 +158,8 @@ class TabularFile(IgvfFile):
 
     def get_row(
         self, check_path: Path, config: Config, doc_aliases: list[Alias]
-    ) -> dict[str, str] | None:
-        kwargs = {"controlled_access": "false"}
+    ) -> UploadRow | None:
+        kwargs: UploadRow = {"controlled_access": config.controlled_access}
         if self.file_format_type is not None:
             kwargs["file_format_type"] = self.file_format_type
         return super()._get_row(
@@ -172,7 +173,7 @@ class TabularFile(IgvfFile):
 class MatrixFile(IgvfFile):
     def get_row(
         self, check_path: Path, config: Config, doc_aliases: list[Alias]
-    ) -> dict[str, str] | None:
+    ) -> UploadRow | None:
         return super()._get_row(
             check_path=check_path,
             config=config,
@@ -185,7 +186,7 @@ class SignalFile(IgvfFile):
 
     def get_row(
         self, check_path: Path, config: Config, doc_aliases: list[Alias]
-    ) -> dict[str, str] | None:
+    ) -> UploadRow | None:
         return super()._get_row(
             check_path=check_path,
             config=config,
@@ -202,7 +203,7 @@ class IgvfDocument(IgvfUploadBase):
 
     def get_row(
         self, check_path: Path, config: Config, doc_aliases: list[Alias]
-    ) -> dict[str, str] | None:
+    ) -> UploadRow | None:
         upload_path = self.get_path(check_path) if check_path.is_dir() else check_path
         if upload_path is None:
             return None
@@ -231,7 +232,7 @@ class IgvfPseudobulk(IgvfUploadBase):
         check_path: Path,
         config: Config,
         doc_aliases: list[Alias],
-    ) -> dict[str, str]:
+    ) -> UploadRow:
         upload_path = check_path if check_path.is_dir() else check_path.parent
         pseudobulk_aliases = self._get_fileset_aliases(
             upload_path=upload_path, config=config

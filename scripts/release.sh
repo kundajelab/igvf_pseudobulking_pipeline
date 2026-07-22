@@ -27,7 +27,7 @@ script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 repo_dir=$(dirname "$script_dir")
 pushd "$repo_dir" &> /dev/null
 
-commit=$(git rev-parse HEAD)
+commit=HEAD
 # determine if we are setting or bumping the project version
 push="false"
 while [[ "$#" -ge 1 ]]; do
@@ -118,7 +118,7 @@ fi
     esac
 done
 
-git commit -am "${message}"
+git commit -m "${message}"
 git tag \
     -a "v${version}" \
     -m "${message}" \

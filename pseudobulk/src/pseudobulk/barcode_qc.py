@@ -83,9 +83,11 @@ class BarcodeQc:
 
     @property
     def _tss_insertions_flank_mean(self) -> float:
+        """Mean of TSS insertionson at the flanks of the peak"""
         return (self.tss_insertions[:100].sum() + self.tss_insertions[-100:].sum()) / 200.0
 
     def _tss_insertions_center(self, tss_half_window: int, tss_half_smooth_window: int) -> float:
+        """Mean of TSS insertions near the center of thepeak"""
         start: int = tss_half_window - tss_half_smooth_window
         end: int = tss_half_window + tss_half_smooth_window + 1
         return self.tss_insertions[start:end].mean()
