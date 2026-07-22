@@ -2,12 +2,12 @@ import csv
 import dataclasses
 import shutil
 import stat
-from pathlib import Path
 from collections import defaultdict
 from collections.abc import (
     Collection,
     Sequence,
 )
+from pathlib import Path
 from typing import Final
 
 from igvf_portal.config import Config
@@ -28,7 +28,6 @@ from igvf_portal.types import (
     UploadRow,
 )
 from igvf_portal.utils import iter_pseudobulk_dirs
-
 
 PSEUDOBULK_FILE_DEFINITIONS: Final[tuple[IgvfUploadBase, ...]] = (
     TabularFile(
@@ -252,7 +251,7 @@ class UploadState:
             return
 
         if keys is None:
-            keys = {key for row in rows for key in row.keys()}
+            keys = {key for row in rows for key in row}
 
         outfile_name = f"{upload_type}.{0 if analysis_step is None else analysis_step.step_num}.tsv"
         outfile = self.upload_tsvs_dir / outfile_name

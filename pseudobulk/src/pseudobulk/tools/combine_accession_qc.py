@@ -7,8 +7,8 @@ from multiprocessing import cpu_count
 from pathlib import Path
 from threading import Lock
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from pseudobulk import utils
 

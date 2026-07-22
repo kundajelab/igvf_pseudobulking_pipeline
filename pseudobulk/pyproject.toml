@@ -44,7 +44,7 @@ filterwarnings = [
 line-length = 100
 
 [tool.poe.tasks]
-lint = "ruff check --fix ."
+lint = "ruff check --select I --fix ."
 format = "ruff format ."
 types = "ty check ."
 checks = ["lint", "format", "types", "test"]

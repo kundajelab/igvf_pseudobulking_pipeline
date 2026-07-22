@@ -6,7 +6,7 @@ job_id="$2"
 first_dir=$(dirname "$job_id")
 second_dir=$(basename "$job_id")
 work_dir=$(\
-    find workspace -type d -mindepth 2 -maxdepth 2 -name work\
+    find workspace -mindepth 2 -maxdepth 2 -type d -name work\
     | while read -r workdir; do
         sub_dir="$workdir/$first_dir"
         if [[ -d "$sub_dir" ]]; then

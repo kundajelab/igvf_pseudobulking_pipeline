@@ -1,12 +1,11 @@
-import logging
 import dataclasses
+import logging
 from enum import StrEnum
 from pathlib import Path
 from typing import Final, NewType, TypeAlias
 
 import numpy as np
 import scipy.sparse
-
 
 Barcode = NewType("Barcode", str)
 Contig = NewType("Contig", str)

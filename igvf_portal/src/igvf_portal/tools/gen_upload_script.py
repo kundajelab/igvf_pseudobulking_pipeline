@@ -1,5 +1,4 @@
 import logging
-import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import (
@@ -7,16 +6,15 @@ from typing import (
     cast,
 )
 
-from igvf_portal import VERSION
+from igvf_portal import VERSION, utils
 from igvf_portal.config import Config
 from igvf_portal.enums import IgvfMode
 from igvf_portal.igvf_lookup import IgvfLookup
-from igvf_portal.upload_state import UploadState
 from igvf_portal.types import (
-    PseudobulkId,
     AnnotationRow,
+    PseudobulkId,
 )
-from igvf_portal.utils import iter_csv_rows
+from igvf_portal.upload_state import UploadState
 
 
 def _load_annotations(
@@ -28,7 +26,7 @@ def _load_annotations(
 
     def _cast_to_annotations() -> Iterator[AnnotationRow]:
         """Private function to yield the rows of the annotations files as AnnotationRow objects."""
-        for row in iter_csv_rows(tsv_path, required_columns=fields.keys()):
+        for row in utils.iter_csv_rows(tsv_path, required_columns=fields.keys()):
             yield cast(
                 AnnotationRow,
                 {name: fields[name](value) for name, value in row.items()},
@@ -86,10 +84,10 @@ def gen_upload_script(
         cell_qualifier_key: column to use for "cell_qualifier" metadata in pseudobulks.
         dry_run: if True, do NOT modify the IGVF portal. If False, actually upload pseudobulk results.
     """
-    if "IGVF_API_KEY" not in os.environ or "IGVF_SECRET_KEY" not in os.environ:
-        raise ValueError("IGVF_API_KEY and IGVF_SECRET_KEY must be set in environment")
-    logger = logging.getLogger(name=f"{__package__} generate-igvf-submission-file")
+    utils.check_access_keys()
+    logger = utils.get_logger_from_file(__file__)
     logger.info(f"Version: {VERSION}")
+
     annotations = _load_annotations(
         basedir / "cell_name_to_annotation_mapping.tsv"
         if annotations_tsv is None

@@ -6,8 +6,8 @@ from igvf_utils.connection import Connection
 
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import (
-    IgvfMode,
     AnalysisStep,
+    IgvfMode,
 )
 from igvf_portal.types import (
     AccessionId,
@@ -25,7 +25,7 @@ class IgvfLookup:
     )
 
     @classmethod
-    def new(cls, igvf_mode: IgvfMode) -> "IgvfLookup":
+    def new(cls, igvf_mode: IgvfMode | str) -> IgvfLookup:
         _igvf_mode = (
             igvf_mode if isinstance(igvf_mode, IgvfMode) else IgvfMode[igvf_mode]
         )
@@ -41,24 +41,6 @@ class IgvfLookup:
             self.record_lookups[key] = record
         return record
 
-    def lookup_aliases(
-        self, key: AccessionId | Alias, raise_on_missing: bool = True
-    ) -> list[Alias]:
-        """Look up list of aliases from alias or accession ID in the portal."""
-        record = self.lookup_record(key)
-        aliases = record["aliases"]
-        if aliases is None:
-            if raise_on_missing:
-                raise ValueError(f"No aliases for '{key}'")
-            else:
-                return []
-        return aliases
-
-    def lookup_accession_id(self, key: AccessionId | Alias) -> AccessionId:
-        """Look up list of aliases from alias or accession ID in the portal."""
-        record = self.lookup_record(key)
-        return record["accession"]
-
     def infer_principal_accessions(
         self, intermediate_accessions: Iterable[AccessionId]
     ) -> set[AccessionId]:
@@ -70,6 +52,8 @@ class IgvfLookup:
             # pop off one of the intermediate accessions and get its record
             intermediate_accession = to_check.pop()
             intermediate_record = self.lookup_record(intermediate_accession)
+            if intermediate_record["status"] == "deleted":
+                continue
             principal_ids = intermediate_record.get("input_for", None)
             if principal_ids is None:
                 # it's not input for anything, so it must be a principal accession
@@ -79,6 +63,8 @@ class IgvfLookup:
                 for principal_id in principal_ids:
                     # get the record for this principal ID
                     principal_record = self.lookup_record(principal_id)
+                    if principal_record["status"] == "deleted":
+                        continue
                     # get its accession and add it to the output set
                     principal_accessions.add(principal_record["accession"])
                     # to decrease lookups, remove everything that was input to it from the IDs to check
@@ -104,7 +90,7 @@ class IgvfLookup:
                     == f"igvf_pseudobulking_pipeline-v{VERSION}"
                 ):
                     version_id = cast(Alias, version_dict["@id"])
-                    return self.lookup_aliases(version_id)
+                    return self.lookup_record(version_id)["aliases"]
         raise ValueError(
             f"Unable to find version of analysis step {analysis_step} for 'igvf_pseudobulking_pipeline-v{VERSION}'"
         )

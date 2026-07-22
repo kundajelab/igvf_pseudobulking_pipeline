@@ -55,7 +55,7 @@ class IgvfUploadBase(abc.ABC):
         return [
             alias
             for file_set in config.file_sets
-            for alias in config.igvf_lookup.lookup_aliases(file_set)
+            for alias in config.igvf_lookup.lookup_record(file_set)["aliases"]
         ]
 
     def _get_fileset_aliases(self, upload_path: Path, config: Config) -> list[Alias]:
@@ -129,7 +129,7 @@ class IgvfFile(IgvfUploadBase):
         def _join_aliases(_aliases: list[Alias]) -> str:
             return ",".join(set(_aliases))
 
-        row = {
+        row: UploadRow = {
             "aliases": _join_aliases(file_aliases),
             "award": config.award,
             "lab": config.lab,
@@ -159,7 +159,7 @@ class TabularFile(IgvfFile):
     def get_row(
         self, check_path: Path, config: Config, doc_aliases: list[Alias]
     ) -> UploadRow | None:
-        kwargs: UploadRow = {"controlled_access": config.controlled_access}
+        kwargs: dict[str, str | bool] = {"controlled_access": config.controlled_access}
         if self.file_format_type is not None:
             kwargs["file_format_type"] = self.file_format_type
         return super()._get_row(
@@ -210,7 +210,7 @@ class IgvfDocument(IgvfUploadBase):
         file_aliases = self._get_aliases(upload_path=upload_path, config=config)
         doc_aliases.extend(file_aliases)
         cell_type, sample_id = config.parse_pseudobulk_folder(check_path)
-        row = {
+        return {
             "aliases": ",".join(set(file_aliases)),
             "award": config.award,
             "lab": config.lab,
@@ -218,7 +218,6 @@ class IgvfDocument(IgvfUploadBase):
             "description": f"{self.description} for {cell_type} in {sample_id}",
             "attachment": f'{"path": "{upload_path.relative_to(config.basedir)}"}',
         }
-        return row
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)

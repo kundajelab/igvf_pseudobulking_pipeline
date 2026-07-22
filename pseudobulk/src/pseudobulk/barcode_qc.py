@@ -7,11 +7,11 @@ import numpy as np
 from pseudobulk.fragment import Fragment
 from pseudobulk.tss import update_tss_insertions
 from pseudobulk.types import (
-    Barcode,
-    Contig,
     COUNTS_ARRAY,
     COUNTS_DTYPE,
     POS_ARRAY,
+    Barcode,
+    Contig,
     PseudobulkName,
 )
 

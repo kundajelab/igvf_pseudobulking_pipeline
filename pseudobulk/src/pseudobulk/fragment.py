@@ -1,13 +1,12 @@
-from pathlib import Path
-from collections.abc import Iterator
 import dataclasses
-
 import gzip
+from collections.abc import Iterator
+from pathlib import Path
 
 from pseudobulk.types import (
+    POS_DTYPE,
     Barcode,
     Contig,
-    POS_DTYPE,
 )
 
 

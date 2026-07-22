@@ -1,3 +1,5 @@
+import dataclasses
+import hashlib
 from collections.abc import (
     Iterator,
     Mapping,
@@ -6,13 +8,16 @@ from functools import cached_property
 from logging import Logger
 from pathlib import Path
 from typing import (
-    cast,
     Literal,
+    cast,
 )
-import dataclasses
-import hashlib
 
 from igvf_portal import VERSION
+from igvf_portal.enums import (
+    AnalysisStep,
+    ContentType,
+)
+from igvf_portal.igvf_lookup import IgvfLookup
 from igvf_portal.types import (
     AccessionId,
     Alias,
@@ -22,11 +27,6 @@ from igvf_portal.types import (
     PseudobulkId,
     SampleId,
 )
-from igvf_portal.enums import (
-    AnalysisStep,
-    ContentType,
-)
-from igvf_portal.igvf_lookup import IgvfLookup
 from igvf_portal.utils import iter_pseudobulk_dirs
 
 
@@ -69,7 +69,7 @@ class Config:
                     == f"igvf_pseudobulking_pipeline-v{VERSION}"
                 ):
                     version_id = cast(Alias, version_dict["@id"])
-                    return self.igvf_lookup.lookup_aliases(version_id)
+                    return self.igvf_lookup.lookup_record(version_id)["aliases"]
         raise ValueError(
             f"Unable to find version of analysis step {analysis_step} for 'igvf_pseudobulking_pipeline-v{VERSION}'"
         )
@@ -113,27 +113,23 @@ class Config:
 
     @cached_property
     def file_sets(self) -> list[AccessionId]:
+        """Return accession IDs of principal analyses for these data."""
         if self.input_file_sets is None or len(self.input_file_sets) == 0:
             return sorted(self._infer_input_file_sets())
         else:
             return cast(list[AccessionId], sorted(self.input_file_sets.split(",")))
 
-    @classmethod
-    def _get_record_file(
-        cls, record: IgvfRecord, content_type: ContentType
+    def _get_first_content_type_file(
+        self, record: IgvfRecord, content_type: ContentType
     ) -> IgvfRecord | None:
-        """Get the input file for a IGVF record of the requested ContentType.
+        """Find the first input file for a IGVF record of the requested ContentType.
 
-        This function assumes there is at most one of that type.
+        Return None if one doesn't exist.
         """
-        return next(
-            (
-                _file
-                for _file in record["files"]
-                if _file["content_type"] == content_type.value
-            ),
-            None,
-        )
+        for file_record in record["files"]:
+            if file_record["content_type"] == content_type.value:
+                return file_record
+        return None
 
     def _iter_intermediate_records(self, record: IgvfRecord) -> Iterator[IgvfRecord]:
         """Iterate over all accession IDs for"""
@@ -149,8 +145,16 @@ class Config:
         content_type: ContentType,
         check_intermediate: bool = True,
     ) -> list[Alias] | None:
-        """Get the aliases for input files from the input file set record."""
-        record_file = self._get_record_file(record, content_type=content_type)
+        """Get the aliases for input files from the input analysis set record.
+
+        Args:
+            record: IgvfRecord corresponding to an analysis set
+            content_type: the content_type to yield aliases for
+            check_intermediate: if True, check any intermediate analyses for files
+        """
+        record_file = self._get_first_content_type_file(
+            record, content_type=content_type
+        )
         if record_file is None:
             if check_intermediate:
                 return [

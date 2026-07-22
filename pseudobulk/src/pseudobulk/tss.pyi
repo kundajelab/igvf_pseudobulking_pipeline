@@ -1,10 +1,11 @@
+import numpy as np
+
 from pseudobulk.types import (
-    POS_ARRAY,
-    POS_DTYPE,
     COUNTS_ARRAY,
     COUNTS_DTYPE,
+    POS_ARRAY,
+    POS_DTYPE,
 )
-import numpy as np
 
 def bisect_left(arr: POS_ARRAY, pos: POS_DTYPE.type) -> np.int64: ...
 def bisect_right(arr: POS_ARRAY, pos: POS_DTYPE.type) -> np.int64: ...
