@@ -24,12 +24,7 @@ process DOWNLOAD_ACCESSION_FILES {
     """
     # get the download URLs (already redirected into S3) for files in each accession, and write to an aria2c input file
     for accession in ${accessions.join(' ')}; do
-        get-url \
-            "\$accession" \
-            --igvf-metadata-url "${params.igvf_metadata_url}" \
-            --igvf-fragments-url "${params.igvf_fragments_url}" \
-            --igvf-counts-matrix-url "${params.igvf_counts_matrix_url}" \
-            --output "${input_file}"
+        get-url "\$accession" --output "${input_file}"
     done
 
     # download the files:
