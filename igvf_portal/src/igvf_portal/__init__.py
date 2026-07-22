@@ -11,8 +11,9 @@ from igvf_portal.tools.gen_upload_script import (
     gen_upload_script,
 )
 from igvf_portal.tools.infer_principal_analysis import infer_principal_analysis
+from igvf_portal.tools.download_file import download_file
 
-tools: list[Callable] = [gen_upload_script, infer_principal_analysis]
+tools: list[Callable] = [gen_upload_script, infer_principal_analysis, download_file]
 
 
 def fix_igvf_logging():

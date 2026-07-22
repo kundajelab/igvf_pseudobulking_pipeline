@@ -3,6 +3,7 @@ from collections.abc import (
     Iterator,
 )
 import csv
+import os
 from io import TextIOWrapper
 from typing import (
     Generator,
@@ -12,6 +13,9 @@ from pathlib import Path
 from contextlib import contextmanager
 import gzip
 
+def check_keys():
+    if "IGVF_API_KEY" not in os.environ or "IGVF_SECRET_KEY" not in os.environ:
+        raise ValueError("IGVF_API_KEY and IGVF_SECRET_KEY must be set in environment")
 
 @contextmanager
 def maybe_gzipped_reader(maybe_gzipped: Path) -> Generator[TextIO]:

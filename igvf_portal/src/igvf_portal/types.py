@@ -38,3 +38,5 @@ class IgvfRecord(TypedDict):
     files: list["IgvfRecord"]
     content_type: str
     controlled_access: bool
+    s3_uri: str
+    submitted_file_name: str
