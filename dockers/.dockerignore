@@ -15,6 +15,5 @@ dist/
 .env.*
 *Dockerfile
 .dockerignore
-README.md
 build/
 *.egg-info/

@@ -14,6 +14,10 @@ process CALL_PEAKS {
         saveAs: { _fileName -> "peaks.narrowPeak.gz" },
         mode: params.publish_mode
     publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
+        pattern: "${filtered_overlap_bigbed}",
+        saveAs: { _fileName -> "peaks.narrowPeak.bb" },
+        mode: params.publish_mode
+    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
         pattern: "${pvalue_bigwig}",
         saveAs: { _fileName -> "peaks_minuslog10pval.bw" },
         mode: params.publish_mode
@@ -29,6 +33,7 @@ process CALL_PEAKS {
             path(rep_t_clipped_ppois)
         path(chrom_sizes)
         path(blacklist)
+        path(peaks_auto_sql)
     output:
         tuple val(pseudobulk_id),
             path(frip_per_cell),
@@ -37,12 +42,14 @@ process CALL_PEAKS {
             emit: per_cell_stats
         path(raw_insertions_bigwig), emit: raw_insertions_bigwig
         path(filtered_overlap_calls), emit: filtered_overlap_calls
+        path(filtered_overlap_bigbed), emit: peaks_bigbed
         path(pvalue_bigwig), emit: pvalue_bigwig
 
     script:
     base = pseudobulk_id
     overlap_output = "${base}.peaks_overlap_unfiltered.narrowPeak"
     filtered_overlap_calls = "${base}.peaks.narrowPeak.gz"
+    filtered_overlap_bigbed = "${base}.peaks.narrowPeak.bb"
     combined_ppois = "${base}.combined_ppois.bdg"
     combined_sorted_ppois = "${base}.combined_ppois_sorted.bdg"
     pvalue_bigwig = "${base}.peaks_minuslog10pval.bw"
@@ -73,8 +80,36 @@ process CALL_PEAKS {
     > "${overlap_output}"
 
     1>&2 echo "Filtering blacklist peaks"
-    bedtools intersect -v -a "${overlap_output}" -b "${blacklist}" \
+    # Use bedtools to keep peaks that don't overlap the blacklist.
+    # NOTES on fixes that require awk:
+    # 1) below that the portal audits `score` values over 1000, because some visualization
+    #    software will error in that case. Use awk to cap score.
+    # 2) MACS3 can extend intervals past the end of a genomic interval, which can cause
+    #    bedToBigBed and the IGVF Portal to error, so cap END at the maximum genome coordinate
+    awk \
+        -F '\\t' \
+        -v OFS='\\t' \
+        '
+        FNR==1 { ++file_num }
+        file_num == 1 { max_end[\$1]=\$2 - 1 }
+        file_num == 2 {
+            if(\$5 > 1000) { \$5 = 1000 }
+            if(\$3 > max_end[\$1]) { \$3 = max_end[\$1] }
+            print \$0
+        }
+        '\
+        "${chrom_sizes}" \
+        <(bedtools intersect -v -a "${overlap_output}" -b "${blacklist}") \
+     \
     | bgzip -@ ${task.cpus} -o "${filtered_overlap_calls}"
+
+    # make bigbed version of filtered peaks
+    bedToBigBed \
+        -type=bed6+4 \
+        -as="${peaks_auto_sql}" \
+        "${filtered_overlap_calls}" \
+        "${chrom_sizes}" \
+        "${filtered_overlap_bigbed}"
 
     1>&2 echo "Combining p-value bedgraphs"
     macs3 cmbreps \

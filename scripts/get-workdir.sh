@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
+script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-workspace="$1"
-job_id="$2"
+job_id="$1"
+workspace="${2:-$("$script_dir/get-default-workspace.sh")}"
 first_dir=$(dirname "$job_id")
 second_dir=$(basename "$job_id")
 work_dir=$(\
-    find workspace -type d -mindepth 2 -maxdepth 2 -name work\
+    find "$workspace" -mindepth 2 -maxdepth 2 -type d -name work\
     | while read -r workdir; do
         sub_dir="$workdir/$first_dir"
         if [[ -d "$sub_dir" ]]; then
@@ -16,4 +17,7 @@ work_dir=$(\
     | tail -n1
 )
 1>&2 echo "work_dir: ${work_dir}"
+if [[ -z "$work_dir" ]]; then
+    exit 1
+fi
 echo "${work_dir}"

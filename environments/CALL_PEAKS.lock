@@ -18,6 +18,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/linux-64/macs3-3.0.4-py312h71493bf_0.conda
       - conda: https://conda.anaconda.org/bioconda/linux-64/ucsc-bedclip-482-h0b57e2e_0.tar.bz2
       - conda: https://conda.anaconda.org/bioconda/linux-64/ucsc-bedgraphtobigwig-482-hdc0a859_0.tar.bz2
+      - conda: https://conda.anaconda.org/bioconda/linux-64/ucsc-bedtobigbed-482-hdc0a859_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/bzip2-1.0.8-hda65f42_9.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/c-ares-1.34.6-hb03c661_0.conda
@@ -77,6 +78,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/linux-aarch64/macs3-3.0.4-py312h9b02f90_0.conda
       - conda: https://conda.anaconda.org/bioconda/linux-aarch64/ucsc-bedclip-482-hd0e7050_0.tar.bz2
       - conda: https://conda.anaconda.org/bioconda/linux-aarch64/ucsc-bedgraphtobigwig-482-h4ebc223_0.tar.bz2
+      - conda: https://conda.anaconda.org/bioconda/linux-aarch64/ucsc-bedtobigbed-482-h4ebc223_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/_openmp_mutex-4.5-20_gnu.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/bzip2-1.0.8-h4777abc_9.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/c-ares-1.34.6-he30d5cf_0.conda
@@ -138,6 +140,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/osx-64/macs3-3.0.4-py313h7ae2a92_0.conda
       - conda: https://conda.anaconda.org/bioconda/osx-64/ucsc-bedclip-482-h4328a2f_0.tar.bz2
       - conda: https://conda.anaconda.org/bioconda/osx-64/ucsc-bedgraphtobigwig-482-hfbcbe9a_0.tar.bz2
+      - conda: https://conda.anaconda.org/bioconda/osx-64/ucsc-bedtobigbed-482-hfbcbe9a_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.5.20-hbd8a1cb_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/joblib-1.5.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.22.1-pyhcf101f3_0.conda
@@ -193,6 +196,7 @@ environments:
       - conda: https://conda.anaconda.org/bioconda/osx-arm64/macs3-3.0.4-py313he27a6d3_0.conda
       - conda: https://conda.anaconda.org/bioconda/osx-arm64/ucsc-bedclip-482-h5f814e5_0.tar.bz2
       - conda: https://conda.anaconda.org/bioconda/osx-arm64/ucsc-bedgraphtobigwig-482-h1643cc5_0.tar.bz2
+      - conda: https://conda.anaconda.org/bioconda/osx-arm64/ucsc-bedtobigbed-482-h1643cc5_0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/ca-certificates-2026.5.20-hbd8a1cb_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/joblib-1.5.3-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/narwhals-2.22.1-pyhcf101f3_0.conda
@@ -319,6 +323,21 @@ packages:
   license: Varies; see https://genome.ucsc.edu/license
   size: 521625
   timestamp: 1750540019644
+- conda: https://conda.anaconda.org/bioconda/linux-64/ucsc-bedtobigbed-482-hdc0a859_0.tar.bz2
+  sha256: 7453c2735d6fc194688353087debc028befef0869d135880aa48ba77b76fc51b
+  md5: 4db836ed27ec29eb1967fb2a1ce88107
+  depends:
+  - bzip2 >=1.0.8,<2.0a0
+  - libgcc >=13
+  - liblzma >=5.8.1,<6.0a0
+  - libopenssl-static
+  - libpng >=1.6.49,<1.7.0a0
+  - libuuid >=2.38.1,<3.0a0
+  - libzlib >=1.3.1,<2.0a0
+  - mysql-connector-c >=6.1.11,<6.1.12.0a0
+  license: Varies; see https://genome.ucsc.edu/license
+  size: 532225
+  timestamp: 1750315926531
 - conda: https://conda.anaconda.org/bioconda/linux-aarch64/bedtools-2.31.1-h63bafd0_3.tar.bz2
   sha256: 394f09590bcbacb74f089ca2834874fa7c2e247b0597921f96cd92c0e26faeec
   md5: 86edf6032c9351a31cbe2aaf139db067
@@ -396,6 +415,21 @@ packages:
   license: Varies; see https://genome.ucsc.edu/license
   size: 538253
   timestamp: 1750539929513
+- conda: https://conda.anaconda.org/bioconda/linux-aarch64/ucsc-bedtobigbed-482-h4ebc223_0.tar.bz2
+  sha256: 6ad5f3363f7a4540c16b509fb9388fcd62216ef7f769fc886d41909c8578948d
+  md5: 965392c0de42b80d226f3636c25b1b31
+  depends:
+  - bzip2 >=1.0.8,<2.0a0
+  - libgcc >=13
+  - liblzma >=5.8.1,<6.0a0
+  - libopenssl-static
+  - libpng >=1.6.49,<1.7.0a0
+  - libuuid >=2.38.1,<3.0a0
+  - libzlib >=1.3.1,<2.0a0
+  - mysql-connector-c >=6.1.11,<6.1.12.0a0
+  license: Varies; see https://genome.ucsc.edu/license
+  size: 549148
+  timestamp: 1750315759776
 - conda: https://conda.anaconda.org/bioconda/osx-64/bedtools-2.31.1-hbb299f0_3.tar.bz2
   sha256: 2e121af16a83ffd673075a629544e6d6e810901a6a3ee2233e6c7f70f1c0691f
   md5: 14117a0fac7ea77047ccb2d396e05d16
@@ -467,6 +501,20 @@ packages:
   license: Varies; see https://genome.ucsc.edu/license
   size: 2515702
   timestamp: 1750540749191
+- conda: https://conda.anaconda.org/bioconda/osx-64/ucsc-bedtobigbed-482-hfbcbe9a_0.tar.bz2
+  sha256: b64c542d2274aaab5c0841824b7e21651933099dc67e4273eb2500ece89ba170
+  md5: 5c717b96269702328758e32ffc945c7c
+  depends:
+  - bzip2 >=1.0.8,<2.0a0
+  - liblzma >=5.8.1,<6.0a0
+  - libopenssl-static
+  - libpng >=1.6.49,<1.7.0a0
+  - libuuid >=2.38.1,<3.0a0
+  - libzlib >=1.3.1,<2.0a0
+  - mysql-connector-c >=6.1.11,<6.1.12.0a0
+  license: Varies; see https://genome.ucsc.edu/license
+  size: 2526652
+  timestamp: 1750316961891
 - conda: https://conda.anaconda.org/bioconda/osx-arm64/bedtools-2.31.1-he85ad4a_3.tar.bz2
   sha256: cd11a800ed5e388ad21e2648f022cb376bbce887795c02427b84caa8b10cdd6c
   md5: 098e54e6b442c7c65be261cae3c7aa0b
@@ -536,6 +584,19 @@ packages:
   license: Varies; see https://genome.ucsc.edu/license
   size: 4032759
   timestamp: 1750539887390
+- conda: https://conda.anaconda.org/bioconda/osx-arm64/ucsc-bedtobigbed-482-h1643cc5_0.tar.bz2
+  sha256: 88fa6ecf78d722e15d0451a3fb39aea5faf012c4203ad83bb42483f50a26dde5
+  md5: 8c93b14b1a22edf3a92b590f0987de3d
+  depends:
+  - bzip2 >=1.0.8,<2.0a0
+  - liblzma >=5.8.1,<6.0a0
+  - libopenssl-static
+  - libpng >=1.6.49,<1.7.0a0
+  - libuuid >=2.38.1,<3.0a0
+  - libzlib >=1.3.1,<2.0a0
+  license: Varies; see https://genome.ucsc.edu/license
+  size: 4051293
+  timestamp: 1750315799368
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
   build_number: 20
   sha256: 1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9

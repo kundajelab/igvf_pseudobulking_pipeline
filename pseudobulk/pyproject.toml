@@ -12,10 +12,10 @@ dependencies = [
     "anndata==0.12.16",
     "cython>=3.2.5",
     "defopt>=7.0.0",
+    "memray>=1.19.3",
     "numpy>=2.4.4",
     "pandas>=2.3.0,<3",
     "psutil>=7.2.2",
-    "scanpy>=1.12.1",
     "scipy>=1.17.1",
     "setuptools>=82.0.1",
 ]
@@ -44,7 +44,7 @@ filterwarnings = [
 line-length = 100
 
 [tool.poe.tasks]
-lint = "ruff check --fix ."
+lint = "ruff check --select I --fix ."
 format = "ruff format ."
 types = "ty check ."
 checks = ["lint", "format", "types", "test"]

@@ -2,12 +2,16 @@ import abc
 import dataclasses
 import fnmatch
 from pathlib import Path
+from typing import cast
 
-from igvf_portal.config import Config
+import requests
+
+from igvf_portal import utils
 from igvf_portal.enums import (
     AnalysisStep,
     OutputCategory,
 )
+from igvf_portal.gen_upload_config import GenUploadConfig
 from igvf_portal.types import (
     Alias,
     PseudobulkId,
@@ -26,7 +30,7 @@ class IgvfUploadBase(abc.ABC):
 
     @abc.abstractmethod
     def get_row(
-        self, check_path: Path, config: Config, doc_aliases: list[Alias]
+        self, check_path: Path, config: GenUploadConfig, doc_aliases: list[Alias]
     ) -> UploadRow | None: ...
 
     """Function to find the right file using match_glob, update or use doc_aliases, and return the resulting TSV row dict."""
@@ -51,58 +55,62 @@ class IgvfUploadBase(abc.ABC):
         return file_path
 
     @classmethod
-    def _lookup_input_file_sets_alias(cls, config: Config) -> list[Alias]:
+    def _lookup_input_file_sets_alias(cls, config: GenUploadConfig) -> list[Alias]:
         return [
-            alias
+            config.igvf_lookup.lookup_record(file_set)["aliases"][0]
             for file_set in config.file_sets
-            for alias in config.igvf_lookup.lookup_aliases(file_set)
         ]
 
-    def _get_fileset_aliases(self, upload_path: Path, config: Config) -> list[Alias]:
+    def _get_fileset_alias(self, upload_path: Path, config: GenUploadConfig) -> Alias:
         """Return an alias for the file set that this data is part of."""
-        match self.output_category:
-            case OutputCategory.PSEUDOBULK:
-                # get the annotations for this pseudobulk set in this folder
-                cell_type, sample_id = config.parse_pseudobulk_folder(upload_path)
-                return [
-                    Alias(
-                        f"{config.alias_prefix}:pseudobulk-{file_set.replace(',', '_')}-{cell_type}-{sample_id}"
-                    )
-                    for file_set in config.file_sets
-                ]
-            case OutputCategory.PRINCIPAL | OutputCategory.INTERMEDIATE:
-                return self._lookup_input_file_sets_alias(config)
+        if self.output_category == OutputCategory.PSEUDOBULK:
+            # need the pseudobulk file set (for this folder), plus the input file set
+            cell_type, sample_id = config.parse_pseudobulk_folder(upload_path)
+            # we can only use one file_set, so just pick the first (if there is more than one, it's just aliases anyway)
+            file_set = config.file_sets[0]
+            return Alias(
+                f"{config.alias_prefix}:pseudobulk-{file_set}-{cell_type}-{sample_id}".replace(
+                    ",", "_"
+                )
+            )
+        else:
+            # we can only use one file_set, so just pick the first (if there is more than one, it's just aliases anyway)
+            return self._lookup_input_file_sets_alias(config)[0]
 
-    def _get_aliases(
+    def _get_file_alias(
         self,
         upload_path: Path,
-        config: Config,
-        file_set_aliases: list[Alias] | None = None,
-    ) -> list[Alias]:
+        config: GenUploadConfig,
+        file_set_alias: Alias | None = None,
+    ) -> Alias:
         """Return an alias for this data set."""
-        if file_set_aliases is None:
-            file_set_aliases = self._get_fileset_aliases(
+        if file_set_alias is None:
+            file_set_alias = self._get_fileset_alias(
                 upload_path=upload_path, config=config
             )
         suffix = upload_path.name.replace(".", "_")
-        aliases = [
-            Alias(f"{file_set_alias}-{suffix}") for file_set_alias in file_set_aliases
-        ]
+        alias = Alias(f"{file_set_alias}-{suffix}")
         match self.analysis_step:
             case AnalysisStep.PSEUDOBULK_ATAC_SEQ:
-                config.step_1_aliases.extend(aliases)
+                config.step_1_aliases[file_set_alias].append(alias)
             case AnalysisStep.PSEUDOBULK_RNA_SEQ:
-                config.step_2_aliases.extend(aliases)
+                config.step_2_aliases[file_set_alias].append(alias)
             case AnalysisStep.PEAK_CALLING:
-                config.step_3_aliases.extend(aliases)
-        return aliases
+                config.step_3_aliases[file_set_alias].append(alias)
+        return alias
 
-    def derived_from(self, config: Config) -> list[Alias]:
+    def derived_from(
+        self, config: GenUploadConfig, file_set_alias: Alias
+    ) -> list[Alias]:
         if self.analysis_step is None:
             raise ValueError(
                 "Invalid use of derived_from for object with no AnalysisStep"
             )
-        return config.derived_from(self.analysis_step)
+        return config.derived_from(
+            analysis_step=self.analysis_step,
+            output_category=self.output_category,
+            file_set_alias=file_set_alias,
+        )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
@@ -114,36 +122,37 @@ class IgvfFile(IgvfUploadBase):
     file_format_specifications: str | None = None
 
     def _get_row(
-        self, check_path: Path, config: Config, **kwargs: str | bool
+        self, check_path: Path, config: GenUploadConfig, **kwargs: str | bool
     ) -> UploadRow | None:
         upload_path = self.get_path(check_path) if check_path.is_dir() else check_path
         if upload_path is None:
             return None
-        file_set_aliases = self._get_fileset_aliases(
-            upload_path=check_path, config=config
-        )
-        file_aliases = self._get_aliases(
-            upload_path=upload_path, config=config, file_set_aliases=file_set_aliases
+        file_set_alias = self._get_fileset_alias(upload_path=check_path, config=config)
+        file_alias = self._get_file_alias(
+            upload_path=upload_path, config=config, file_set_alias=file_set_alias
         )
 
         def _join_aliases(_aliases: list[Alias]) -> str:
             return ",".join(set(_aliases))
 
-        row = {
-            "aliases": _join_aliases(file_aliases),
+        row: UploadRow = {
+            "aliases": file_alias,
             "award": config.award,
             "lab": config.lab,
-            "file_set": _join_aliases(file_set_aliases),
+            "derived_manually": False,
+            "file_set": file_set_alias,
             "file_format": self.file_format,
             "content_type": self.content_type,
-            # "assembly": ASSEMBLY,
             "md5sum": config.md5sum(upload_path),
+            "file_size": upload_path.stat().st_size,
             "submitted_file_name": f"{upload_path.relative_to(config.basedir)}",
             "reference_files": config.reference_files,
             "analysis_step_version": _join_aliases(
                 config.analysis_step_versions[self.analysis_step]
             ),
-            "derived_from": _join_aliases(self.derived_from(config)),
+            "derived_from": _join_aliases(
+                self.derived_from(config=config, file_set_alias=file_set_alias)
+            ),
             **kwargs,
         }
         if self.file_format_specifications is not None:
@@ -157,9 +166,9 @@ class TabularFile(IgvfFile):
     file_format_type: str | None = None
 
     def get_row(
-        self, check_path: Path, config: Config, doc_aliases: list[Alias]
+        self, check_path: Path, config: GenUploadConfig, doc_aliases: list[Alias]
     ) -> UploadRow | None:
-        kwargs: UploadRow = {"controlled_access": config.controlled_access}
+        kwargs: dict[str, str | bool] = {"controlled_access": config.controlled_access}
         if self.file_format_type is not None:
             kwargs["file_format_type"] = self.file_format_type
         return super()._get_row(
@@ -172,7 +181,7 @@ class TabularFile(IgvfFile):
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
 class MatrixFile(IgvfFile):
     def get_row(
-        self, check_path: Path, config: Config, doc_aliases: list[Alias]
+        self, check_path: Path, config: GenUploadConfig, doc_aliases: list[Alias]
     ) -> UploadRow | None:
         return super()._get_row(
             check_path=check_path,
@@ -185,7 +194,7 @@ class SignalFile(IgvfFile):
     strand_specificity: str
 
     def get_row(
-        self, check_path: Path, config: Config, doc_aliases: list[Alias]
+        self, check_path: Path, config: GenUploadConfig, doc_aliases: list[Alias]
     ) -> UploadRow | None:
         return super()._get_row(
             check_path=check_path,
@@ -202,23 +211,22 @@ class IgvfDocument(IgvfUploadBase):
     analysis_step: None = None
 
     def get_row(
-        self, check_path: Path, config: Config, doc_aliases: list[Alias]
+        self, check_path: Path, config: GenUploadConfig, doc_aliases: list[Alias]
     ) -> UploadRow | None:
         upload_path = self.get_path(check_path) if check_path.is_dir() else check_path
         if upload_path is None:
             return None
-        file_aliases = self._get_aliases(upload_path=upload_path, config=config)
-        doc_aliases.extend(file_aliases)
+        file_alias = self._get_file_alias(upload_path=upload_path, config=config)
+        doc_aliases.append(file_alias)
         cell_type, sample_id = config.parse_pseudobulk_folder(check_path)
-        row = {
-            "aliases": ",".join(set(file_aliases)),
+        return {
+            "aliases": file_alias,
             "award": config.award,
             "lab": config.lab,
             "document_type": self.document_type,
             "description": f"{self.description} for {cell_type} in {sample_id}",
             "attachment": f'{"path": "{upload_path.relative_to(config.basedir)}"}',
         }
-        return row
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)
@@ -230,24 +238,63 @@ class IgvfPseudobulk(IgvfUploadBase):
     def get_row(
         self,
         check_path: Path,
-        config: Config,
+        config: GenUploadConfig,
         doc_aliases: list[Alias],
     ) -> UploadRow:
         upload_path = check_path if check_path.is_dir() else check_path.parent
-        pseudobulk_aliases = self._get_fileset_aliases(
+        pseudobulk_alias = self._get_fileset_alias(
             upload_path=upload_path, config=config
         )
         # get the annotations for this pseudobulk set in this folder
         pseudobulk_id = PseudobulkId(check_path.name)
         annotations = config.annotations[pseudobulk_id]
-        return {
-            "aliases": ",".join(pseudobulk_aliases),
+        # this format is needed for upload to portal, it corresponds to looking up `term_name` == CL_id
+        cl_id = annotations["CL_id"]
+        cell_type = f"/sample-terms/{cl_id.replace(':', '_')}/"
+        try:
+            term_name = config.igvf_lookup.lookup_record(Alias(cell_type))["term_name"]
+        except requests.exceptions.HTTPError:
+            # note, if this happens, upload will fail. But we can still generate the correct upload script,
+            # and manually ask the DACC to add the required SampleTerm
+            records = utils.lookup_ontology_by_cl_id(cl_id)
+            if records is None:
+                raise ValueError(f"Unknown possibly invalid CL_id: {cl_id}")
+            term_name = cast(str, records[0]["label"])
+
+        # If cell_qualifier is speicifed in the annotations, use it.
+        # Otherwise get cell_qualifier as leftover text after removing term_name from other cell ID
+        # description columns.
+        cell_qualifier = annotations.get("cell_qualifier", None)
+        if cell_qualifier is None:
+            cell_qualifier = max(
+                (
+                    annotations[key].replace(term_name, "").strip()
+                    for key in ("cell_name", "cell_description", "CL_term_name")
+                ),
+                key=lambda _q: len(_q),
+            )
+            if len(cell_qualifier) == 0:
+                # if there is no remainder, just leave cell_qualifier blank
+                cell_qualifier = None
+
+        input_file_sets = set(
+            config.get_input_file_sets(
+                cell_name=annotations["cell_name"],
+                subsample=annotations["subsample"],
+            )
+        )
+
+        row: UploadRow = {
+            "aliases": pseudobulk_alias,
             "award": config.award,
             "lab": config.lab,
             "file_set_type": config.file_set_type,
-            "cell_type": annotations[config.cell_type_key],
-            "cell_qualifier": annotations[config.cell_qualifier_key],
+            "cell_type": cell_type,
             "samples": annotations["subsample"],
-            "input_file_sets": ",".join(config.file_sets),
-            "documents": ",".join(doc_aliases),
+            "input_file_sets": ",".join(sorted(input_file_sets)),
+            "documents": ",".join(sorted(doc_aliases)),
+            "merged": False,
         }
+        if cell_qualifier is not None:
+            row["cell_qualifier"] = cell_qualifier
+        return row

@@ -15,7 +15,8 @@ done
 
 find "$repo_dir/environments" -maxdepth 1 -type f -name "*.yaml" \
 | while read -r yaml; do
-    if [[ ! -d "$repo_dir/$(basename "${yaml%.yaml}" | tr '[:upper:]' '[:lower:]')" ]]; then
-        printf "%s\tyaml\n" "$(basename "$yaml")"
+    project=$(basename "${yaml%.yaml}" | tr '[:upper:]' '[:lower:]')
+    if [[ ! -d "$repo_dir/$project" ]]; then
+        printf "%s\tyaml\n" "$project"
     fi
 done

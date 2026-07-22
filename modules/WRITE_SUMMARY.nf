@@ -5,7 +5,7 @@ process WRITE_SUMMARY {
     memory '24 GB'
     conda "environments/VISUALIZE_QC.yaml"
     container "${dotenv('VISUALIZE_QC_IMAGE')}"
-    publishDir "${params.workspace}/output",
+    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output",
         pattern: "${qc_report}",
         mode: params.publish_mode
 
@@ -47,8 +47,7 @@ process WRITE_SUMMARY {
             <(echo -e "${accession_ids.join('\\n')}")
     } > "${input_summary_stats}"
 
-
-    # 2. create a temporary directory in case pandas/pola.rs are writing temporary files    
+    # 2. create a temporary directory in case pandas/pola.rs are writing temporary files
     export TMPDIR=\$(mktemp -d -p .)
     trap 'rm -rf "\$TMPDIR"' EXIT
 

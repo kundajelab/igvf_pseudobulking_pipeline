@@ -21,12 +21,14 @@ repo_dir=$(dirname "$script_dir")
             ;;
         "yaml")
             echo "Checking yaml project: $project"
+            environments_dir="$repo_dir/environments"
+            yaml="$environments_dir/$(tr '[:upper:]' '[:lower:]' <<< "$project").yaml"
             yamllint \
                 -d "{extends: default, rules: {document-start: false}}" \
-                "$repo_dir/environments/$project"
-            has_needed_keys=$(yq 'keys | contains(["channels", "dependencies", "name"])' "$repo_dir/environments/$project")
+                "$yaml"
+            has_needed_keys=$(yq 'keys | contains(["channels", "dependencies", "name"])' "$yaml")
             if [[ "$has_needed_keys" != "true" ]]; then
-                1>&2 echo "Error: $project is missing one or more required keys: channels, dependencies, name"
+                1>&2 echo "Error: $yaml is missing one or more required keys: channels, dependencies, name"
                 exit 1
             fi
             ;;

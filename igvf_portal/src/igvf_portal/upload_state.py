@@ -2,19 +2,19 @@ import csv
 import dataclasses
 import shutil
 import stat
-from pathlib import Path
 from collections import defaultdict
 from collections.abc import (
     Collection,
     Sequence,
 )
-from typing import Final
+from pathlib import Path
+from typing import Final, cast
 
-from igvf_portal.config import Config
 from igvf_portal.enums import (
     AnalysisStep,
     OutputCategory,
 )
+from igvf_portal.gen_upload_config import GenUploadConfig
 from igvf_portal.igvf_uploads import (
     IgvfDocument,
     IgvfPseudobulk,
@@ -24,11 +24,11 @@ from igvf_portal.igvf_uploads import (
     TabularFile,
 )
 from igvf_portal.types import (
+    AccessionId,
     Alias,
     UploadRow,
 )
 from igvf_portal.utils import iter_pseudobulk_dirs
-
 
 PSEUDOBULK_FILE_DEFINITIONS: Final[tuple[IgvfUploadBase, ...]] = (
     TabularFile(
@@ -41,11 +41,31 @@ PSEUDOBULK_FILE_DEFINITIONS: Final[tuple[IgvfUploadBase, ...]] = (
         file_format_specifications="buenrostro-bernstein:igvf-single-cell-pipeline-fragment-file-specification",
     ),
     TabularFile(
+        analysis_step=AnalysisStep.PSEUDOBULK_ATAC_SEQ,
+        output_category=OutputCategory.PSEUDOBULK,
+        match_glob="fragments.bb",
+        optional=True,
+        file_format="bigBed",
+        file_format_type="bed3+",
+        content_type="fragments",
+        file_format_specifications="buenrostro-bernstein:igvf-single-cell-pipeline-fragment-file-specification",
+    ),
+    TabularFile(
         analysis_step=AnalysisStep.PEAK_CALLING,
         output_category=OutputCategory.PSEUDOBULK,
         match_glob="peaks.narrowPeak.gz",
         optional=True,
         file_format="bed",
+        file_format_type="bed6+",
+        content_type="peaks",
+        file_format_specifications="anshul-kundaje:pseudobulk_peaks_file_format_spec",
+    ),
+    TabularFile(
+        analysis_step=AnalysisStep.PEAK_CALLING,
+        output_category=OutputCategory.PSEUDOBULK,
+        match_glob="peaks.narrowPeak.bb",
+        optional=True,
+        file_format="bigBed",
         file_format_type="bed6+",
         content_type="peaks",
         file_format_specifications="anshul-kundaje:pseudobulk_peaks_file_format_spec",
@@ -129,7 +149,7 @@ class FileUploadRows:
 @dataclasses.dataclass(kw_only=True, slots=True)
 class UploadState:
     basedir: Path
-    config: Config
+    config: GenUploadConfig
     document_rows: list[UploadRow] = dataclasses.field(default_factory=list)
     pseudobulk_folders_docs: defaultdict[Path, list[Alias]] = dataclasses.field(
         default_factory=lambda: defaultdict(list)
@@ -140,6 +160,9 @@ class UploadState:
         )
     )
     submission_rows: list[str] = dataclasses.field(default_factory=list)
+    required_cell_ids: set[Alias] = dataclasses.field(default_factory=set)
+    required_sample_ids: set[Alias] = dataclasses.field(default_factory=set)
+    required_format_specs: set[Alias] = dataclasses.field(default_factory=set)
 
     def __post_init__(self):
         # Check for missing or extra pseudobulks
@@ -180,6 +203,10 @@ class UploadState:
                 check_path=check_path, config=self.config, doc_aliases=doc_aliases
             )
             if row is not None:
+                file_spec = row.get("file_format_specifications", None)
+                if file_spec is not None:
+                    self.required_format_specs.add(Alias(file_spec))
+
                 file_rows = self.analysis_step_file_upload_rows[analysis_step]
                 match file_def:
                     case TabularFile():
@@ -252,14 +279,14 @@ class UploadState:
             return
 
         if keys is None:
-            keys = {key for row in rows for key in row.keys()}
+            keys = {key for row in rows for key in row}
 
         outfile_name = f"{upload_type}.{0 if analysis_step is None else analysis_step.step_num}.tsv"
         outfile = self.upload_tsvs_dir / outfile_name
         outfile.parent.mkdir(exist_ok=True)
         with outfile.open("wt") as f_out:
             writer = csv.DictWriter(
-                f_out, fieldnames=keys, delimiter="\t", quoting=csv.QUOTE_NONE
+                f_out, fieldnames=sorted(keys), delimiter="\t", quoting=csv.QUOTE_NONE
             )
             writer.writeheader()
             for row in rows:
@@ -273,7 +300,7 @@ class UploadState:
             f"1>&2 echo Register {upload_type}{step_description}"
         )
         self.submission_rows.append(
-            f'iu_register "$dry_run_arg" -m "$igvf_mode" -p {upload_type} -i "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode" --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
         )
 
     def write_upload_state(self) -> None:
@@ -296,6 +323,12 @@ class UploadState:
                 for folder, doc_aliases in self.pseudobulk_folders_docs.items()
             ]
             self._write_tsv("pseudobulk_set", pseudobulk_rows, analysis_step=None)
+            # add metadata to check
+            for row in pseudobulk_rows:
+                self.required_cell_ids.add(Alias(row["cell_type"]))
+                self.required_sample_ids.update(
+                    cast(list[Alias], row["samples"].split(","))
+                )
         # then matrix, signal and tabular files in order of step number
         for (
             analysis_step,
@@ -332,3 +365,26 @@ class UploadState:
             f_out.writelines(f"{row.strip()}\n" for row in self.submission_rows)
         out.chmod(out.stat().st_mode | stat.S_IEXEC)
         self.config.logger.info(f"Wrote submission script to {out}")
+
+    def _check_required_id(
+        self, metadata_id: Alias | AccessionId, description: str
+    ) -> int:
+        try:
+            self.config.lookup_record(metadata_id)
+            return 0
+        except ValueError as value_error:
+            self.config.logger.error(
+                f"Checking {description} {metadata_id}: {value_error}"
+            )
+            return 1
+
+    def check_required_metadata(self) -> None:
+        num_errors = 0
+        for cell_id in self.required_cell_ids:
+            num_errors += self._check_required_id(cell_id, "cell ID")
+        for sample_id in self.required_sample_ids:
+            num_errors += self._check_required_id(sample_id, "sample ID")
+        for format_spec in self.required_format_specs:
+            num_errors += self._check_required_id(format_spec, "file format spec")
+        if num_errors > 0:
+            raise ValueError(f"Missing {num_errors} required metadata elements.")

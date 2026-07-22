@@ -6,31 +6,35 @@ process DOWNLOAD_ACCESSION_FILES {
     secret 'IGVF_SECRET_KEY'
     cpus 1
     memory '8 GB'
-    conda "environments/DOWNLOAD_ACCESSION_FILES.yaml"
-    container "${dotenv('DOWNLOAD_ACCESSION_FILES_IMAGE')}"
+    conda "environments/IGVF_PORTAL.yaml"
+    container "${dotenv('IGVF_PORTAL_IMAGE')}"
     cache "lenient"
     maxForks 1
-    publishDir "${params.workspace}/raw_rna", pattern: "*.h5ad", mode: params.publish_mode
-    publishDir "${params.workspace}/raw_fragments", pattern: "*.bed.gz", mode: params.publish_mode
+    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/raw_rna", pattern: "*.h5ad", mode: params.publish_mode
+    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/raw_fragments", pattern: "*.bed.gz", mode: params.publish_mode
 
     input:
         val(accessions)
+        val(igvf_mode)
     output:
-        path("*.bed.gz"), emit: fragments_files
-        path("*.h5ad"), emit: counts_matrix_files
+        path("*.bed.gz"), optional: true, emit: fragments_files
+        path("*.h5ad"), optional: true, emit: counts_matrix_files
 
     script:
-    input_file = "aria2c_input.txt"
+    aria2c_input_file = "aria2c_input.txt"
     """
     # get the download URLs (already redirected into S3) for files in each accession, and write to an aria2c input file
-    for accession in ${accessions.join(' ')}; do
-        get-url \
-            "\$accession" \
-            --igvf-metadata-url "${params.igvf_metadata_url}" \
-            --igvf-fragments-url "${params.igvf_fragments_url}" \
-            --igvf-counts-matrix-url "${params.igvf_counts_matrix_url}" \
-            --output "${input_file}"
+    # NOTE: the accessions must be quoted individually. They may be "<input>;<output>" tuples, and an
+    # unquoted ";" would end the for statement rather than being passed through to get-url.
+    for accession in "${accessions.join('" "')}"; do
+        igvf-portal get-url "\$accession" \
+            --output "${aria2c_input_file}" \
+            --igvf-mode "${igvf_mode}"
     done
+    if [[ -z "${aria2c_input_file}" ]]; then
+        1>&2 echo "Did not find any files to download."
+        exit 1
+    fi
 
     # download the files:
     # - get URLs and downloaded file names from the aria2c input_file
@@ -39,7 +43,7 @@ process DOWNLOAD_ACCESSION_FILES {
     # - download at most 8 files at once
     # - respect the system's open file limit
     aria2c \
-        --input-file="${input_file}" \
+        --input-file="${aria2c_input_file}" \
         --max-connection-per-server=16 \
         --split=16 \
         --max-concurrent-downloads=8 \

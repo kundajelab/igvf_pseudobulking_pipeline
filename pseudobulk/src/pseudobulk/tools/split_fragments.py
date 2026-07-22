@@ -1,40 +1,41 @@
+import csv
+import dataclasses
+import gzip
+import itertools
+import logging
+import random
+import time
 from collections import deque
+from collections.abc import Mapping
 from contextlib import ExitStack
 from io import BufferedReader
 from pathlib import Path
 from threading import (
-    local,
     Lock,
     Thread,
+    local,
 )
 from typing import (
     BinaryIO,
     TextIO,
 )
-import csv
-import dataclasses
-import itertools
-import logging
-import psutil
-import random
-import time
 
-import gzip
 import numpy as np
 import pandas as pd
+import psutil
 import scipy.sparse
 
-from pseudobulk.utils import create_and_write
-from pseudobulk.fragment import Fragment
-from pseudobulk.barcode_qc import BarcodeQc
-
 from pseudobulk import utils
+from pseudobulk.barcode_qc import BarcodeQc
+from pseudobulk.fragment import Fragment
 from pseudobulk.types import (
+    COUNTS_DTYPE,
+    POS_ARRAY,
     Barcode,
     Contig,
-    POS_ARRAY,
     PseudobulkName,
 )
+from pseudobulk.utils import create_and_write
 
 
 @dataclasses.dataclass
@@ -103,7 +104,7 @@ class PseudobulkFiles:
         self.fragments_out.write(f"{fragment}")
 
 
-@dataclasses.dataclass(slots=True, kw_only=True, weakref_slot=False)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class SharedThreadData:
     fragments_in: BinaryIO
     fragments_deque: deque[bytes | None]
@@ -291,6 +292,78 @@ def _run_qc(
     return shared_thread_data.barcode_qcs
 
 
+def _write_qc(
+    analysis_set_accession: str,
+    barcode_qcs: dict[Barcode, BarcodeQc],
+    barcodes_to_pseudobulks: Mapping[Barcode, PseudobulkName],
+    output_dir: Path,
+    tss_half_window: int,
+    tss_half_smooth_window: int,
+    logger: logging.Logger,
+) -> None:
+    """Write QC reports and sparse matrix of Transcription Start Sites."""
+    logger.info("Writing QC reports")
+    barcodes = list(barcode_qcs.keys())
+    num_barcodes = len(barcodes)
+    tss_row_len = 2 * tss_half_window + 1
+    # Fill the compressed row buffers of the TSS matrix directly, instead of building one sparse array
+    # per barcode and stacking them at the end: scipy.sparse.vstack has to allocate a second copy of
+    # every insertion while the per-barcode arrays are still alive, which doubles peak memory. Each
+    # per-barcode sparse array also costs ~1 KB of container overhead on top of its insertions, which
+    # dominates for the many barcodes that have very few insertions.
+    # NOTE: the buffers are sized exactly, using one cheap pass to count the non-zero insertions, so
+    # that they never have to be grown (which would copy them as well).
+    total_insertions = sum(
+        int(np.count_nonzero(barcode_qcs[barcode_sample].tss_insertions))
+        for barcode_sample in barcodes
+    )
+    # NOTE: the indices and the row pointers must share a dtype, otherwise scipy copies the narrower
+    # of the two to widen it when the matrix is created.
+    index_dtype = np.int64 if total_insertions > 2**31 - 1 else np.int32
+    tss_insertion_counts = np.empty((total_insertions,), dtype=COUNTS_DTYPE)
+    tss_insertion_locs = np.empty((total_insertions,), dtype=index_dtype)
+    tss_row_starts = np.zeros((num_barcodes + 1,), dtype=index_dtype)
+    num_written = 0
+    with utils.create_and_write(
+        output_dir / "atac_qc_reports" / f"{analysis_set_accession}.tsv"
+    ) as qc_out:
+        writer = csv.writer(qc_out, delimiter="\t")
+        writer.writerow(BarcodeQc.header_columns())
+        for idx, barcode_sample in enumerate(barcodes):
+            barcode_qc = barcode_qcs.pop(barcode_sample)
+            writer.writerow(
+                barcode_qc.csv_columns(
+                    analysis_set_accession=analysis_set_accession,
+                    barcode_sample=barcode_sample,
+                    pseudobulk_id=barcodes_to_pseudobulks.get(barcode_sample, None),
+                    tss_half_window=tss_half_window,
+                    tss_half_smooth_window=tss_half_smooth_window,
+                )
+            )
+            (insertion_locs,) = np.nonzero(barcode_qc.tss_insertions)
+            num_insertions = insertion_locs.size
+            insertions_slice = slice(num_written, num_written + num_insertions)
+            tss_insertion_locs[insertions_slice] = insertion_locs
+            tss_insertion_counts[insertions_slice] = barcode_qc.tss_insertions[insertion_locs]
+            num_written += num_insertions
+            tss_row_starts[idx + 1] = num_written
+            del barcode_qc.tss_insertions
+            del barcode_qc
+            if idx % 10000 == 9999:
+                barcode_qcs = {key: val for key, val in barcode_qcs.items()}
+
+    del barcode_qcs
+    logger.info("Writing TSS sparse matrix.")
+    # NOTE: creating the matrix from the buffers does not copy them
+    scipy.sparse.save_npz(
+        output_dir / "atac_qc_reports" / f"{analysis_set_accession}_tss_matrix.npz",
+        scipy.sparse.csr_array(
+            (tss_insertion_counts, tss_insertion_locs, tss_row_starts),
+            shape=(num_barcodes, tss_row_len),
+        ),
+    )
+
+
 def split_fragments(
     *,
     fragments_file: Path,
@@ -359,6 +432,8 @@ def split_fragments(
 
     logger.info("Updating pseudobulk stats")
     random.seed(random_seed)
+    num_pseudobulk_barcodes: int = 0
+
     # all the fragments are QC-ed and split, write fragments to appropriate pseudobulk files
     for barcode_sample, barcode_qc in barcode_qcs.items():
         if barcode_qc.fragments is None:
@@ -367,6 +442,8 @@ def split_fragments(
         pseudobulk: PseudobulkName | None = barcodes_to_pseudobulks.get(barcode_sample, None)
         if pseudobulk is None:
             continue
+
+        num_pseudobulk_barcodes += 1
 
         with ExitStack() as exit_stack:
             pseudobulk_out = PseudobulkFiles.new(
@@ -380,28 +457,16 @@ def split_fragments(
                 if fragment.contig in allowed_chrs:
                     barcode_qc.annotated = True
                     pseudobulk_out.write_fragment(fragment)
+            barcode_qc.fragments = []
 
-    # write out QC results, try to keep memory down before stacking TSS insertions
-    tss_rows: list[scipy.sparse.csr_array] = []
-    with utils.create_and_write(
-        output_dir / "atac_qc_reports" / f"{analysis_set_accession}.tsv"
-    ) as qc_out:
-        writer = csv.writer(qc_out, delimiter="\t")
-        writer.writerow(BarcodeQc.header_columns())
-        barcodes = set(barcode_qcs.keys())
-        for barcode_sample in barcodes:
-            barcode_qc = barcode_qcs.pop(barcode_sample)
-            writer.writerow(
-                barcode_qc.csv_columns(
-                    analysis_set_accession=analysis_set_accession,
-                    barcode_sample=barcode_sample,
-                    pseudobulk_id=barcodes_to_pseudobulks.get(barcode_sample, None),
-                    tss_half_window=tss_half_window,
-                    tss_half_smooth_window=tss_half_smooth_window,
-                )
-            )
-            tss_rows.append(scipy.sparse.csr_array(barcode_qc.tss_insertions))
-    scipy.sparse.save_npz(
-        output_dir / "atac_qc_reports" / f"{analysis_set_accession}_tss_matrix.npz",
-        scipy.sparse.vstack(tss_rows),
+    logger.info(f"Wrote {num_pseudobulk_barcodes} pseudobulk barcodes.")
+
+    _write_qc(
+        analysis_set_accession=analysis_set_accession,
+        barcode_qcs=barcode_qcs,
+        barcodes_to_pseudobulks=barcodes_to_pseudobulks,
+        output_dir=output_dir,
+        tss_half_window=tss_half_window,
+        tss_half_smooth_window=tss_half_smooth_window,
+        logger=logger,
     )

@@ -7,11 +7,11 @@ import numpy as np
 from pseudobulk.fragment import Fragment
 from pseudobulk.tss import update_tss_insertions
 from pseudobulk.types import (
-    Barcode,
-    Contig,
     COUNTS_ARRAY,
     COUNTS_DTYPE,
     POS_ARRAY,
+    Barcode,
+    Contig,
     PseudobulkName,
 )
 
@@ -22,7 +22,7 @@ enrichment calculations.
 """
 
 
-@dataclasses.dataclass(slots=True, weakref_slot=False, kw_only=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class BarcodeQc:
     tss_insertions: COUNTS_ARRAY
     fragments: list[Fragment] | None = dataclasses.field(default_factory=list)

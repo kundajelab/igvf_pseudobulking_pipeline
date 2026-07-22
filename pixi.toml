@@ -16,26 +16,23 @@ uv_sub_projects = ["igvf_upload", "pseudobulk", "visualize_qc"]
 [tasks]
 pipeline = {
     description = "Run the IGVF pseudobulk pipeline.",
-    args = [
-        { arg = "metadata", default = "$(readlink -f test_metadata.tsv)" },
-        { arg = "principal_analysis", default = "" },
-        { arg = "queue", default = "normal" },
-        { arg = "profile", default = "$(scripts/get-default-profile.sh)" },
-        { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"}
-    ],
-    cmd = """
-        scripts/run-pipeline.sh \
-            --principal-analysis "{{principal_analysis}}" \
-            --workspace "{{workspace}}" \
-            --queue "{{queue}}" \
-            --profile "{{profile}}" \
-            "{{metadata}}"
-    """
+    cmd = """scripts/run-pipeline.sh"""
+}
+submit = {
+    description = "Submit the pipeline to SLURM as a batch job and return immediately. Forwards arguments to run-pipeline.sh.",
+    cmd = """scripts/submit-pipeline.sh"""
+}
+upload-results = {
+    description = "Upload results to IGVF portal after running pipeline with --dry-run.",
+    cmd = """scripts/upload-results.sh"""
+}
+status = {
+    description = "Show the status of a submitted pipeline: head process, task jobs, and log tail.",
+    cmd = """scripts/status-pipeline.sh"""
 }
 clear = {
-    description = "Clear all the outputs and temporary files from past pipeline runs.",
-    args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
-    cmd = """rm -rf .nextflow* "{{workspace}}""""
+    description = "Clear all the temporary files from past pipeline runs, and any apptainer images.",
+    cmd = """pixi run scripts/remove-intermediates.sh"""
 }
 install-all = {
     description = "Install main project and sub-projects.",
@@ -52,11 +49,21 @@ install-subprojects = {
     description = "Install sub-projects",
     cmd = "pixi run scripts/install-projects.sh"
 }
-
-
+run-in-container = {
+    description = "Run command in specified container image. Currently only works with apptainer, not docker.",
+    cmd = """scripts/run-in-container.sh"""
+}
 lint-nextflow = {
     description = "Lint nextflow pipeline",
-    cmd = "nextflow lint main.nf"
+    cmd = "nextflow lint main.nf nextflow.config"
+}
+lint-scripts = {
+    description = "Lint shell scripts",
+    cmd = "shellcheck scripts/*.sh"
+}
+lint-preview = {
+    description = "Build every channel with 'nextflow run -preview' without submitting any task, catching wiring errors that nextflow lint cannot see.",
+    cmd = """scripts/preview-pipeline.sh"""
 }
 check-subprojects = {
     description = "Check all sub-projects",
@@ -66,13 +73,15 @@ checks = {
     description = "Run all checks.",
     depends-on = [
         "check-subprojects",
-        "lint-nextflow"
+        "lint-nextflow",
+        "lint-scripts",
+        "lint-preview"
     ]
 }
 get-latest-report = {
     description = "Get the path to the most recent execution report",
     args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
-    cmd = """find "{{workspace}}/trace" -name 'execution_report*' | sort | tail -n1"""
+    cmd = """find "{{workspace}}" -maxdepth 3 -mindepth 3 -type f -name "execution_report*" | sort | tail -n1"""
 }
 watch-log = {
     description = "Watch the log of the supplied workflow ID",
@@ -80,20 +89,43 @@ watch-log = {
         { arg = "job_id" },
         { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"}
     ],
-    cmd = """tail -f -n+1 "$(scripts/get-workdir.sh "{{workspace}}" "{{job_id}}")/.command.log" | grep --line-buffered -v '^+'"""
+    cmd = """
+    export log_file="$(scripts/get-workdir.sh "{{job_id}}" "{{workspace}}")/.command.log"
+    bash -c 'while [[ ! -f "$log_file" ]]; do sleep 1; done; tail -f -n+1 "$log_file" | grep --line-buffered -v "^+"'
+    """
 }
 build-dockers = {
     description = "Build all the dockers for the project",
-    args = [
-        { "arg" = "push", "default" = "--push" },
-        { "arg" = "tag", "default" = "latest" }
-    ],
-    cmd = "scripts/build-dockers.sh {{push}} {{tag}}"
+    cmd = "scripts/build-dockers.sh"
 }
 export-secrets = {
-    description = "Use nextflow secrets to export IGVF portal secrets to output variable defs than can be sourced",
+    description = "Use nextflow secrets to export IGVF portal secrets to output variable defs than can be sourced.",
     cmd = """echo "export IGVF_API_KEY=$(nextflow secrets get IGVF_API_KEY)" && \
         echo "export IGVF_SECRET_KEY=$(nextflow secrets get IGVF_SECRET_KEY)""""
+}
+import-secrets = {
+    description = "Use currently set env VARS to assign nextlow IVF portal secrets.",
+    cmd = """ \
+    bash -c '
+        if [[ -n "${IGVF_API_KEY+set}" ]] && [[ -n "${IGVF_SECRET_KEY+set}" ]]; then
+            nextflow secrets set IGVF_API_KEY "$IGVF_API_KEY" && \
+            nextflow secrets set IGVF_SECRET_KEY "$IGVF_SECRET_KEY"
+        else
+            1>&2 echo "IGVF_SECRET_KEY and IGVF_SECRET_KEY must be defined"
+            exit 1
+        fi
+    '
+    """
+}
+download = {
+    description = "Download file from IGVF portal based on accession or alias.",
+    args = ["alias"],
+    cmd = """pixi run --manifest-path igvf_portal igvf-portal download-file "{{alias}}" """
+}
+lookup = {
+    description = "Lookup record from IGVF portal based on accession or alias, print YAML to stdout.",
+    args = ["alias"],
+    cmd = """pixi run --manifest-path igvf_portal igvf-portal lookup-record "{{alias}}" """
 }
 
 
@@ -102,6 +134,7 @@ nextflow = { version = ">=25.10.4,<26", channel = "bioconda" }
 nf-core = ">=3.5.2,<4"
 uv = ">=0.11.15,<0.12"
 micromamba = ">=2.5.0,<2.6.0"
+shellcheck = ">=0.11.0,<0.12"
 
 [activation]
 scripts=["scripts/fake-conda.sh"]

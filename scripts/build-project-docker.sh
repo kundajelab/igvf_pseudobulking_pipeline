@@ -2,6 +2,10 @@
 set -euo pipefail
 # script to build a docker image for a uv or pixi-based project
 
+script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+repo_dir=$(dirname "$script_dir")
+tag=$(pushd "$repo_dir" &> /dev/null && git describe --tags --abbrev=0)
+
 push="true"
 while [[ "$#" -gt 1 ]]; do
     case "$1" in
@@ -23,12 +27,13 @@ while [[ "$#" -gt 1 ]]; do
     esac
 done
 project="$1"
-tag="${2:-latest}"
+tag="${2:-$tag}"
 registry="${3:-kundajelab}"
 
-script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-repo_dir=$(dirname "$script_dir")
+trap 'rm -f "$repo_dir/$project/.dockerignore"' EXIT
+cp "$repo_dir/dockers/.dockerignore" "$project"
 pushd "$project" &> /dev/null
+
 if [[ -f "$repo_dir/$project/pixi.lock" ]]; then
     project_type="pixi"
     pixi lock --manifest-path .
@@ -38,7 +43,6 @@ else
     pixi run uv sync
 fi
 dockerfile="$repo_dir/dockers/${project_type}-project.Dockerfile"
-
 
 local_tag="${project}:${tag}"
 remote_tag="${registry}/${local_tag}"
@@ -60,4 +64,3 @@ fi
 # output name for dotenv environment file
 environment_name=$(tr '[:lower:]' '[:upper:]' <<< "$project")
 echo "${environment_name}_IMAGE=${remote_tag}"
-
