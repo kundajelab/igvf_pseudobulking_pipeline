@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 
 import pandas as pd
+import numpy as np
 
 from pseudobulk import utils
 
@@ -45,6 +46,8 @@ def _load_and_combine_accession_qc(
     if rna_qc_tsv.exists():
         rna_qc = utils.read_csv(rna_qc_tsv)
         rna_qc["found_in_rna"] = True
+        rna_qc["rna_read_count"] = rna_qc["rna_read_count"].astype(np.uint64)
+        rna_qc["gene_count"] = rna_qc["gene_count"].astype(np.uint64)
         with log_lock:
             logger.info(f"Got RNA QC for {accession} with shape {rna_qc.shape}")
     else:

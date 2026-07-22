@@ -122,13 +122,15 @@ def _compute_pseudobulk_qc_summary(
     pseudobulk_qc_summary["num_cells"] = pseudobulk_combined_qc.shape[0]
     # RNA
     if pseudobulk_counts is None or not pseudobulk_counts.exists():
-        pseudobulk_qc_summary["rna_read_count"] = None
-        pseudobulk_qc_summary["gene_count"] = None
+        pseudobulk_qc_summary["rna_read_count"] = 0
+        pseudobulk_qc_summary["gene_count"] = 0
         pseudobulk_qc_summary["pct_mito"] = float("nan")
         pseudobulk_qc_summary["pct_ribo"] = float("nan")
     else:
         pseudobulk_rna_exp = utils.read_csv(pseudobulk_counts)
-        pseudobulk_qc_summary["rna_read_count"] = pseudobulk_rna_exp["counts"].sum()
+        pseudobulk_qc_summary["rna_read_count"] = (
+            pseudobulk_rna_exp["counts"].sum().astype(np.uint64)
+        )
         pseudobulk_qc_summary["gene_count"] = np.count_nonzero(pseudobulk_rna_exp["counts"])
         pseudobulk_qc_summary["pct_mito"] = (
             pseudobulk_rna_exp[pseudobulk_rna_exp["mt"]]["counts"].sum()
@@ -139,7 +141,7 @@ def _compute_pseudobulk_qc_summary(
             / pseudobulk_qc_summary["rna_read_count"]
         ) * 100
     # ATAC
-    pseudobulk_qc_summary["num_frags"] = pseudobulk_atac_qc["num_frags"].sum()
+    pseudobulk_qc_summary["num_frags"] = pseudobulk_atac_qc["num_frags"].sum().astype(np.uint64)
     pseudobulk_qc_summary["pct_duplicated_reads"] = (
         pseudobulk_atac_qc["raw-num_dup_reads"].sum() / pseudobulk_atac_qc["raw-num_reads"].sum()
     ) * 100

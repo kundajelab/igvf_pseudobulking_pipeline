@@ -1,4 +1,4 @@
-from typing import NewType
+from typing import NewType, TypeAlias
 from typing import TypedDict
 
 PseudobulkId = NewType("PseudobulkId", str)
@@ -14,6 +14,9 @@ SampleId = NewType("SampleId", str)
 
 AccessionId = NewType("AccessionId", str)
 """New str type exclusively for accession IDs."""
+
+UploadRow: TypeAlias = dict[str, str | bool]
+""" Type for rows to upload/register data with the Portal."""
 
 
 class AnnotationRow(TypedDict):
@@ -34,3 +37,4 @@ class IgvfRecord(TypedDict):
     input_file_sets: list["IgvfRecord"]
     files: list["IgvfRecord"]
     content_type: str
+    controlled_access: bool

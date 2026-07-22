@@ -75,6 +75,13 @@ class Config:
         )
 
     @cached_property
+    def controlled_access(self) -> bool:
+        return any(
+            self.igvf_lookup.lookup_record(file_set)["controlled_access"]
+            for file_set in self.file_sets
+        )
+
+    @cached_property
     def analysis_step_versions(self) -> dict[AnalysisStep, list[Alias]]:
         return {
             analysis_step: self._lookup_analysis_step_version(analysis_step)

@@ -64,7 +64,8 @@ def _save_obs(adata: ad.AnnData, metadata_df_x: pd.DataFrame, qc_report_path: Pa
             "pct_counts_ribo": "pct_ribo",
         },
     )  # Rename
-    obs["rna_read_count"] = obs["rna_read_count"].astype(int)
+    obs["rna_read_count"] = obs["rna_read_count"].astype(np.uint64)
+    obs["gene_count"] = obs["gene_count"].astype(np.uint64)
     obs["annotated"] = obs["barcode_sample"].isin(set(metadata_df_x["barcode_sample"]))
     barcodes_to_pseudobulks = utils.map_barcodes_to_pseudobulks(metadata_df_x)
     obs["pseudobulk_id"] = obs["barcode_sample"].map(
