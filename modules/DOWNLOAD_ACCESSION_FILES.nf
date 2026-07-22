@@ -10,8 +10,8 @@ process DOWNLOAD_ACCESSION_FILES {
     container "${dotenv('DOWNLOAD_ACCESSION_FILES_IMAGE')}"
     cache "lenient"
     maxForks 1
-    publishDir "${params.workspace}/raw_rna", pattern: "*.h5ad", mode: params.publish_mode
-    publishDir "${params.workspace}/raw_fragments", pattern: "*.bed.gz", mode: params.publish_mode
+    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/raw_rna", pattern: "*.h5ad", mode: params.publish_mode
+    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/raw_fragments", pattern: "*.bed.gz", mode: params.publish_mode
 
     input:
         val(accessions)

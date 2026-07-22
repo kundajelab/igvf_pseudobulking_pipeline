@@ -33,9 +33,9 @@ pipeline = {
     """
 }
 clear = {
-    description = "Clear all the outputs and temporary files from past pipeline runs.",
+    description = "Clear all the temporary files from past pipeline runs, and any apptainer images.",
     args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
-    cmd = """rm -rf .nextflow* "{{workspace}}""""
+    cmd = """pixi run scripts/remove-intermediates.sh --workspace "{{workspace}}" all"""
 }
 install-all = {
     description = "Install main project and sub-projects.",

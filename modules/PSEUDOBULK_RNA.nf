@@ -31,7 +31,7 @@ process PSEUDOBULK_RNA {
                 "${pseudobulk_id}/pseudobulk_expression.tsv.gz"
         },
         mode: params.publish_mode
-    publishDir "${params.workspace}/output",
+    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output",
         pattern: "cell_name_to_annotation_mapping.tsv",
         mode: params.publish_mode
 
