@@ -16,26 +16,23 @@ uv_sub_projects = ["igvf_upload", "pseudobulk", "visualize_qc"]
 [tasks]
 pipeline = {
     description = "Run the IGVF pseudobulk pipeline.",
-    args = [
-        { arg = "metadata", default = "$(readlink -f test_metadata.tsv)" },
-        { arg = "principal_analysis", default = "" },
-        { arg = "queue", default = "normal" },
-        { arg = "profile", default = "$(scripts/get-default-profile.sh)" },
-        { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"}
-    ],
-    cmd = """
-        scripts/run-pipeline.sh \
-            --principal-analysis "{{principal_analysis}}" \
-            --workspace "{{workspace}}" \
-            --queue "{{queue}}" \
-            --profile "{{profile}}" \
-            "{{metadata}}"
-    """
+    cmd = """scripts/run-pipeline.sh"""
+}
+submit = {
+    description = "Submit the pipeline to SLURM as a batch job and return immediately. Forwards arguments to run-pipeline.sh.",
+    cmd = """scripts/submit-pipeline.sh"""
+}
+status = {
+    description = "Show the status of a submitted pipeline: head process, task jobs, and log tail.",
+    cmd = """scripts/status-pipeline.sh"""
 }
 clear = {
     description = "Clear all the temporary files from past pipeline runs, and any apptainer images.",
-    args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
-    cmd = """pixi run scripts/remove-intermediates.sh --workspace "{{workspace}}" all"""
+    args = [
+        { arg = "project", default = "all"},
+        { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"}
+    ],
+    cmd = """pixi run scripts/remove-intermediates.sh --workspace "{{workspace}}" {{project}}"""
 }
 install-all = {
     description = "Install main project and sub-projects.",
@@ -52,11 +49,21 @@ install-subprojects = {
     description = "Install sub-projects",
     cmd = "pixi run scripts/install-projects.sh"
 }
-
-
+pull-apptainer = {
+    description = "Pull specified apptainer image",
+    args = [{ arg = "image" }, {arg = "tag", default = "$(git describe --tags --abbrev=0)"}],
+    cmd = """
+    export docker_tag={{tag}} && \
+    bash -c 'apptainer pull \
+        -F \
+        /scratch/users/tbrookin/workspace/apptainer_cache/kundajelab-{{image}}-$docker_tag.img \
+        docker://kundajelab/{{image}}:$docker_tag \
+        2> >(grep -v "harmless EPERM" >&2)'
+    """
+}
 lint-nextflow = {
     description = "Lint nextflow pipeline",
-    cmd = "nextflow lint main.nf"
+    cmd = "nextflow lint main.nf nextflow.config"
 }
 check-subprojects = {
     description = "Check all sub-projects",
@@ -72,7 +79,7 @@ checks = {
 get-latest-report = {
     description = "Get the path to the most recent execution report",
     args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
-    cmd = """find "{{workspace}}/trace" -name 'execution_report*' | sort | tail -n1"""
+    cmd = """find "{{workspace}}" -maxdepth 3 -mindepth 3 -type f -name "execution_report*" | sort | tail -n1"""
 }
 watch-log = {
     description = "Watch the log of the supplied workflow ID",
@@ -80,20 +87,29 @@ watch-log = {
         { arg = "job_id" },
         { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"}
     ],
-    cmd = """tail -f -n+1 "$(scripts/get-workdir.sh "{{workspace}}" "{{job_id}}")/.command.log" | grep --line-buffered -v '^+'"""
+    cmd = """
+    export log_file="$(scripts/get-workdir.sh "{{workspace}}" "{{job_id}}")/.command.log"
+    bash -c 'while [[ ! -f "$log_file" ]]; do sleep 1; done; tail -f -n+1 "$log_file" | grep --line-buffered -v "^+"'
+    """
 }
 build-dockers = {
     description = "Build all the dockers for the project",
-    args = [
-        { "arg" = "push", "default" = "--push" },
-        { "arg" = "tag", "default" = "latest" }
-    ],
-    cmd = "scripts/build-dockers.sh {{push}} {{tag}}"
+    cmd = "scripts/build-dockers.sh"
 }
 export-secrets = {
     description = "Use nextflow secrets to export IGVF portal secrets to output variable defs than can be sourced",
     cmd = """echo "export IGVF_API_KEY=$(nextflow secrets get IGVF_API_KEY)" && \
         echo "export IGVF_SECRET_KEY=$(nextflow secrets get IGVF_SECRET_KEY)""""
+}
+download = {
+    description = "Download file from IGVF portal based on accession or alias.",
+    args = ["alias"],
+    cmd = """pixi run --manifest-path igvf_portal igvf-portal download-file "{{alias}}" """
+}
+lookup = {
+    description = "Lookup record from IGVF portal based on accession or alias, print YAML to stdout.",
+    args = ["alias"],
+    cmd = """pixi run --manifest-path igvf_portal igvf-portal lookup-record "{{alias}}" """
 }
 
 

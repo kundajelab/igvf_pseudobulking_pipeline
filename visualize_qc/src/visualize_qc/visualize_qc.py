@@ -1,6 +1,6 @@
-from imaplib import IMAP4_stream, IMAP4_SSL
 import dataclasses
 import logging
+import re
 from collections.abc import (
     Iterable,
     Iterator,
@@ -18,8 +18,8 @@ import plotly
 import plotly.basedatatypes
 import plotly.graph_objects as go
 import plotly.io as pio
-import plotly.subplots as subplots
 import polars as pl
+from plotly import subplots
 from plotly.graph_objs import Figure
 
 # TODO: fix outputs of early pipeline stages to output integer, then change schemas to use integer values
@@ -77,28 +77,55 @@ class DataScales:
     """Class for storing the scales of a dataset."""
 
     min_val: int | float
+    min_finite_val: int | float
     quartile_1: int | float
     median: int | float
     quartile_3: int | float
+    max_finite_val: int | float
     max_val: int | float
     iqr: int | float
 
     @classmethod
-    def from_data(cls, data: pl.Series) -> "DataScales":
+    def from_data(
+        cls, data: pl.Series, logger: logging.Logger | None = None
+    ) -> DataScales:
         """Produce DataScales from a pandas Series."""
-        min_val: float | int = data.min()  # ty: ignore[invalid-assignment]
         quartile_1: float | int
         median: float | int
         quartile_3: float | int
-        quartile_1, median, quartile_3 = data.quantile([0.25, 0.5, 0.75])  # ty: ignore[invalid-assignment]
-        max_val: float | int = data.max()  # ty: ignore[invalid-assignment]
+        nan = float("nan")
+        if data.is_empty():
+            quartile_1, median, quartile_3 = nan, nan, nan
+            iqr, min_finite_val, max_finite_val = nan, nan, nan
+            min_val, max_val = nan, nan
+        else:
+            min_val: float | int = data.min()  # ty: ignore[invalid-assignment]
+            max_val: float | int = data.max()  # ty: ignore[invalid-assignment]
+            num_data = len(data)
+            finite_data = data.filter(data.is_finite())
+            num_finite = len(finite_data)
+            if num_finite < num_data and logger is not None:
+                logger.warning(
+                    f"Found {num_data - num_finite} non-finite values in {data.name}"
+                )
+            if finite_data.is_empty():
+                quartile_1, median, quartile_3 = data.quantile([0.25, 0.5, 0.75])  # ty: ignore[invalid-assignment]
+                iqr, min_finite_val, max_finite_val = nan, nan, nan
+            else:
+                quartile_1, median, quartile_3 = finite_data.quantile([0.25, 0.5, 0.75])  # ty: ignore[invalid-assignment]
+                iqr = quartile_3 - quartile_1
+                min_finite_val: float | int = finite_data.min()  # ty: ignore[invalid-assignment]
+                max_finite_val: float | int = finite_data.max()  # ty: ignore[invalid-assignment]
+
         return cls(
             min_val=min_val,
+            min_finite_val=min_finite_val,
             quartile_1=quartile_1,
             median=median,
             quartile_3=quartile_3,
+            max_finite_val=max_finite_val,
             max_val=max_val,
-            iqr=quartile_3 - quartile_1,
+            iqr=iqr,
         )
 
     @property
@@ -112,10 +139,14 @@ class DataScales:
         return max(self.min_val, self.quartile_1 - 1.5 * self.iqr)
 
 
-def _fmt_text(val: float | int) -> str:
+def _fmt_text(val: float) -> str:
     """Format a value as a string for display in the plot."""
     exp_style = f"{val:.3e}"
-    norm_style = f"{int(round(val)):d}" if round(val) == val else f"{val:.3f}"
+    norm_style = (
+        (f"{round(val):d}" if round(val) == val else f"{val:.3f}")
+        if np.isfinite(val)
+        else ("nan" if np.isnan(val) else "inf" if np.isposinf(val) else "-inf")
+    )
     return norm_style if len(norm_style) < len(exp_style) else exp_style
 
 
@@ -138,28 +169,41 @@ class ScaleInfo:
     num_ticks: int = 6
     ln_10: ClassVar[float] = np.log(10.0)
     show_x_tick_labels: bool = False
+    has_plus_inf: bool = False
+    has_minus_inf: bool = False
+    unplotable_range: bool = False
 
     @classmethod
-    def from_data_scales(
-        cls, data_scales: DataScales, num_ticks: int = 6
-    ) -> "ScaleInfo":
+    def from_data_scales(cls, data_scales: DataScales, num_ticks: int = 6) -> ScaleInfo:
         """Produce ScaleInfo from DataScales."""
-        if data_scales.max_val - data_scales.quartile_1 > 5 * data_scales.iqr:
+        if data_scales.max_finite_val - data_scales.quartile_1 > 5 * data_scales.iqr:
             # use a symlog scale, choose the transition from linear to log
             log_scale = max(
-                1e-3, min(abs(data_scales.quartile_1), abs(data_scales.quartile_3))
+                1e-3,
+                min(1.0, min(abs(data_scales.quartile_1), abs(data_scales.quartile_3))),
             )
         else:
             log_scale = None
+        has_plus_inf = bool(np.isposinf(data_scales.max_val))
+        has_minus_inf = bool(np.isneginf(data_scales.min_val))
+        unplotable_range = bool(
+            (np.isnan(data_scales.min_val) and np.isnan(data_scales.max_val))
+            or np.isneginf(data_scales.max_val)
+            or np.isposinf(data_scales.min_val)
+        )
+
         return cls(
             log_scale=log_scale,
-            min_val=data_scales.min_val,
-            max_val=data_scales.max_val,
+            min_val=data_scales.min_finite_val,
+            max_val=data_scales.max_finite_val,
             num_ticks=num_ticks,
+            has_plus_inf=has_plus_inf,
+            has_minus_inf=has_minus_inf,
+            unplotable_range=unplotable_range,
         )
 
     @classmethod
-    def _scale(cls, val: int | float, log_scale: float) -> float:
+    def _scale(cls, val: float, log_scale: float) -> float:
         """Convert unscaled value to symlog. Class method assumes log_scale is not None."""
         abs_val = abs(val)
         return (
@@ -170,7 +214,7 @@ class ScaleInfo:
         )
 
     @classmethod
-    def _inv_scale(cls, val: int | float, log_scale: float) -> float:
+    def _inv_scale(cls, val: float, log_scale: float) -> float:
         """Convert symlog value to unscaled. Class method assumes log_scale is not None."""
         abs_val = np.abs(val)
         return (
@@ -180,11 +224,11 @@ class ScaleInfo:
             * (log_scale + cls.ln_10 * np.expm1(cls.ln_10 * (abs_val - log_scale)))
         )
 
-    def scale(self, val: int | float) -> float:
+    def scale(self, val: float) -> float:
         """Convert unscaled value to symlog if log_scale is not None."""
         return val if self.log_scale is None else self._scale(val, self.log_scale)
 
-    def inv_scale(self, val: int | float) -> float:
+    def inv_scale(self, val: float) -> float:
         """Convert symlog value to unscaled if log_scale is not None."""
         return val if self.log_scale is None else self._inv_scale(val, self.log_scale)
 
@@ -201,12 +245,22 @@ class ScaleInfo:
     @property
     def range(self) -> tuple[float, float]:
         """Return the range of the data: (min_val, max_val)."""
-        return self.min_val, self.max_val
+        if self.unplotable_range:
+            return -1.0, -1.0
+        else:
+            delta = self.max_val - self.min_val
+            bottom = self.min_val - delta / 2 if self.has_plus_inf else self.min_val
+            top = self.max_val + delta / 2 if self.has_plus_inf else self.max_val
+            return bottom, top
 
     @property
     def transformed_range(self) -> tuple[float, float]:
         """Return the transformed range of the data: (scale(min_val), scale(max_val))."""
-        return self.scale(self.min_val), self.scale(self.max_val)
+        if self.unplotable_range:
+            return -1.0, 1.0
+        else:
+            bottom, top = self.range
+            return self.scale(bottom), self.scale(top)
 
     @property
     def ticktext(self) -> list[str] | None:
@@ -316,11 +370,14 @@ def _drop_null(
 
 
 def _visualize_numeric(
-    property_values: pl.Series, index: pl.Series, max_outliers: int = 5
+    property_values: pl.Series,
+    index: pl.Series,
+    logger: logging.Logger,
+    max_outliers: int = 5,
 ) -> tuple[ScaleInfo, Iterable[plotly.basedatatypes.BaseTraceType]]:
     """Visualize numeric property values as a box plot with outliers scattered."""
     property_values, index = _drop_null(property_values, index)
-    data_scales = DataScales.from_data(property_values)
+    data_scales = DataScales.from_data(property_values, logger=logger)
     scale_info = ScaleInfo.from_data_scales(data_scales)
     high = data_scales.high
     low = data_scales.low
@@ -368,7 +425,7 @@ def _visualize_numeric(
         y=[scaled_low, scaled_low, scaled_high, scaled_high, scaled_low],
         fill="toself",
         fillcolor="rgba(0,0,0,0)",  # fully transparent fill
-        line=dict(color="rgba(0,0,0,0)"),  # invisible border too
+        line={"color": "rgba(0,0,0,0)"},  # invisible border too
         mode="lines",
         name="",  # keep it out of the legend
         showlegend=False,
@@ -387,11 +444,11 @@ def _visualize_numeric(
         x=[0] * len(outliers),
         y=outliers,
         mode="markers",
-        marker=dict(
-            size=3,
-            color="rgba(90, 90, 90, 0.4)",  # Subtle translucent grey dots
-            line=dict(width=0),
-        ),
+        marker={
+            "size": 3,
+            "color": "rgba(90, 90, 90, 0.4)",  # Subtle translucent grey dots
+            "line": {"width": 0},
+        },
         hoverinfo="text",
         hovertext=outliers_index,
         showlegend=False,
@@ -442,46 +499,49 @@ def _visualize_qc(
     )
 
     for plot_idx, col in enumerate(qc_df.collect_schema().names()):
-        logger.debug(f"  plotting {col}")
-        property_values = qc_df.select(col).collect(engine="streaming")[col]
+        try:
+            logger.debug(f"  plotting {col}")
+            property_values = qc_df.select(col).collect(engine="streaming")[col]
 
-        if property_values.dtype.is_numeric():
-            scale_info, traces = _visualize_numeric(
-                property_values, index, max_outliers=max_outliers
+            if property_values.dtype.is_numeric():
+                scale_info, traces = _visualize_numeric(
+                    property_values, index, max_outliers=max_outliers, logger=logger
+                )
+            else:
+                scale_info, traces = _visualize_categorical(property_values)
+
+            row = 1 + (plot_idx // num_cols)
+            col = 1 + (plot_idx % num_cols)
+            for trace in traces:
+                fig.add_trace(trace, row=row, col=col)
+
+            fig.update_yaxes(
+                nticks=6,  # Limits the density of numeric ticks on the axis
+                row=row,
+                col=col,
+                range=scale_info.transformed_range,
+                tickvals=scale_info.tickvals,
+                ticktext=scale_info.ticktext,
+                tickmode=scale_info.tickmode,
+                tickformat=".3g",
             )
-        else:
-            scale_info, traces = _visualize_categorical(property_values)
 
-        row = 1 + (plot_idx // num_cols)
-        col = 1 + (plot_idx % num_cols)
-        for trace in traces:
-            fig.add_trace(trace, row=row, col=col)
-
-        fig.update_yaxes(
-            nticks=6,  # Limits the density of numeric ticks on the axis
-            row=row,
-            col=col,
-            range=scale_info.transformed_range,
-            tickvals=scale_info.tickvals,
-            ticktext=scale_info.ticktext,
-            tickmode=scale_info.tickmode,
-            tickformat=".3g",
-        )
-
-        # Hide standard category x-axis labels since subplot titles handle this
-        fig.update_xaxes(
-            showticklabels=scale_info.show_x_tick_labels,
-            row=row,
-            col=col,
-            title_text=property_values.name,
-        )
+            # Hide standard category x-axis labels since subplot titles handle this
+            fig.update_xaxes(
+                showticklabels=scale_info.show_x_tick_labels,
+                row=row,
+                col=col,
+                title_text=property_values.name,
+            )
+        except Exception as exception:
+            raise RuntimeError(f"Error plotting {col} in {title}") from exception
 
     # Set layout for whole figure with all subplots
     fig.update_layout(
-        title=dict(text=title, font=dict(size=18)),
+        title={"text": title, "font": {"size": 18}},
         template="none",
         height=550,  # Extra vertical height to handle multi-range tracking
-        margin=dict(l=100, r=100, t=80, b=40),
+        margin={"l": 100, "r": 100, "t": 80, "b": 40},
         clickmode="event",  # Broadcasts click events out to JavaScript
     )
 
@@ -603,18 +663,19 @@ def scan_csv(
         return df_lazy, index
 
 
+_CSV_OR_TSV_PATTERN = re.compile(r"\.[c|t]sv(\.gz)?$")
+
+
 def _is_csv_or_tsv(path: Path) -> bool:
     """Check if the file is a CSV or TSV file."""
     if not path.is_file():
         return False
-    match path.suffixes:
-        case [_, ".tsv"] | [_, ".csv"] | [_, ".tsv", ".gz"] | [_, ".csv", ".gz"]:
-            return True
-        case _:
-            return False
+    return _CSV_OR_TSV_PATTERN.search(path.name) is not None
 
 
-def _find_qc_files(input_paths: Iterable[Path], filter_glob: str = "*") -> Iterator[Path]:
+def _find_qc_files(
+    input_paths: Iterable[Path], filter_glob: str = "*"
+) -> Iterator[Path]:
     """Yield paths of CSV/TSV files matching the filter glob from the input paths."""
     for input_path in input_paths:
         if input_path.is_file():
@@ -854,7 +915,11 @@ def visualize_qc(
     table_qc: Iterable[Path] = (),
     accession_qc: Iterable[Path] = (),
     pseudobulk_qc: Iterable[Path] = (),
-    exclude_col: Iterable[str] = ("analysis_set_accession", "pseudobulk_id", "subsample"),
+    exclude_col: Iterable[str] = (
+        "analysis_set_accession",
+        "pseudobulk_id",
+        "subsample",
+    ),
     index_col: str = "barcode_sample",
     max_outliers: int = 5,
     max_cols_per_row: int = 6,

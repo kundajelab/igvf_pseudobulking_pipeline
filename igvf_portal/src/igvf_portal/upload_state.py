@@ -10,11 +10,11 @@ from collections.abc import (
 from pathlib import Path
 from typing import Final
 
-from igvf_portal.config import Config
 from igvf_portal.enums import (
     AnalysisStep,
     OutputCategory,
 )
+from igvf_portal.gen_upload_config import GenUploadConfig
 from igvf_portal.igvf_uploads import (
     IgvfDocument,
     IgvfPseudobulk,
@@ -40,11 +40,31 @@ PSEUDOBULK_FILE_DEFINITIONS: Final[tuple[IgvfUploadBase, ...]] = (
         file_format_specifications="buenrostro-bernstein:igvf-single-cell-pipeline-fragment-file-specification",
     ),
     TabularFile(
+        analysis_step=AnalysisStep.PSEUDOBULK_ATAC_SEQ,
+        output_category=OutputCategory.PSEUDOBULK,
+        match_glob="fragments.bb",
+        optional=True,
+        file_format="bigBed",
+        file_format_type="bed3+",
+        content_type="fragments",
+        file_format_specifications="buenrostro-bernstein:igvf-single-cell-pipeline-fragment-file-specification",
+    ),
+    TabularFile(
         analysis_step=AnalysisStep.PEAK_CALLING,
         output_category=OutputCategory.PSEUDOBULK,
         match_glob="peaks.narrowPeak.gz",
         optional=True,
         file_format="bed",
+        file_format_type="bed6+",
+        content_type="peaks",
+        file_format_specifications="anshul-kundaje:pseudobulk_peaks_file_format_spec",
+    ),
+    TabularFile(
+        analysis_step=AnalysisStep.PEAK_CALLING,
+        output_category=OutputCategory.PSEUDOBULK,
+        match_glob="peaks.narrowPeak.bb",
+        optional=True,
+        file_format="bigBed",
         file_format_type="bed6+",
         content_type="peaks",
         file_format_specifications="anshul-kundaje:pseudobulk_peaks_file_format_spec",
@@ -128,7 +148,7 @@ class FileUploadRows:
 @dataclasses.dataclass(kw_only=True, slots=True)
 class UploadState:
     basedir: Path
-    config: Config
+    config: GenUploadConfig
     document_rows: list[UploadRow] = dataclasses.field(default_factory=list)
     pseudobulk_folders_docs: defaultdict[Path, list[Alias]] = dataclasses.field(
         default_factory=lambda: defaultdict(list)
@@ -258,7 +278,7 @@ class UploadState:
         outfile.parent.mkdir(exist_ok=True)
         with outfile.open("wt") as f_out:
             writer = csv.DictWriter(
-                f_out, fieldnames=keys, delimiter="\t", quoting=csv.QUOTE_NONE
+                f_out, fieldnames=sorted(keys), delimiter="\t", quoting=csv.QUOTE_NONE
             )
             writer.writeheader()
             for row in rows:
@@ -272,7 +292,7 @@ class UploadState:
             f"1>&2 echo Register {upload_type}{step_description}"
         )
         self.submission_rows.append(
-            f'iu_register "$dry_run_arg" -m "$igvf_mode" -p {upload_type} -i "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode" --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
         )
 
     def write_upload_state(self) -> None:

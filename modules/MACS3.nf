@@ -1,27 +1,13 @@
 include { dotenv } from 'plugin/nf-dotenv'
+include { oomMemoryOf ; oomMaxRetriesOf } from './retry.nf'
 
 process MACS3 {
     cpus 1
     conda "environments/CALL_PEAKS.yaml"
     container "${dotenv('CALL_PEAKS_IMAGE')}"
     cache 'deep'
-    memory {
-        if (task.previousTrace) {
-            def wasOom = task.exitStatus in 137..140
-            wasOom ? task.previousTrace.memory + baseMem : baseMem
-        } else {
-            baseMem
-        }
-    }
-    maxRetries {
-        def wasOom = task.exitStatus in 137..140
-        def previousOomCount = (task.previousTrace.memory / baseMem).round() as Integer
-        task.executor == 'local' || (
-            previousOomCount >= params.max_oom_retries && wasOom
-        ) ?
-        params.oom_max_retries :
-        params.preemptible_max_retries + params.oom_max_retries
-    }
+    memory { oomMemoryOf(task, baseMem) }
+    maxRetries { oomMaxRetriesOf(task, baseMem) }
 
     input:
         tuple val(pseudobulk_id), path(fragments_tsv, arity: "1")
@@ -56,7 +42,7 @@ process MACS3 {
         --SPMR \
         --keep-dup all \
         --call-summits
-    
+
     1>&2 echo "Subsetting to top peaks"
     # avoid running out of /tmp space in cluster/cloud environment
     temp_dir=\$(mktemp -d -p .)
@@ -78,7 +64,7 @@ process MACS3 {
         -t "${treatment}" \
         -c "${control}" \
         -o "${ppois}"
-    
+
     1>2 echo "clipping bedgraphs"
     bedClip \
         "${ppois}" \

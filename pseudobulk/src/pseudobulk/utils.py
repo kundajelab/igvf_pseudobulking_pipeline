@@ -1,12 +1,17 @@
+import re
+import signal
+import unicodedata
+from collections import defaultdict
 from collections.abc import (
     Hashable,
+    Iterable,
     Mapping,
     Sequence,
 )
-from contextlib import contextmanager, nullcontext
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from logging import Logger
 from pathlib import Path
-from threading import Lock
 from types import MappingProxyType
 from typing import (
     Callable,
@@ -14,6 +19,7 @@ from typing import (
     Generator,
     Literal,
     TextIO,
+    TypeAlias,
     overload,
 )
 
@@ -33,6 +39,25 @@ from pseudobulk.types import (
     PseudobulkName,
 )
 
+LogLock: TypeAlias = AbstractContextManager[bool]
+"""A lock used to keep log messages from interleaving.
+
+Tools that parallelize with processes rather than threads must supply a multiprocessing lock, since
+a threading lock only serializes the threads within one process.
+"""
+
+OOM_EXIT_STATUS: Final[int] = 137
+"""Exit status of a process killed for running out of memory (128 + SIGKILL)."""
+
+_CGROUP_ROOT: Final[Path] = Path("/sys/fs/cgroup")
+"""Mount point of the cgroup filesystem."""
+
+_CGROUP_OOM_FILE_NAMES: Final[tuple[str, ...]] = (
+    "memory.events",  # cgroup v2
+    "memory.oom_control",  # cgroup v1, but only reports oom_kill on kernel 4.13 and later
+)
+"""Files reporting the OOM kill count of a cgroup, in the order they should be tried."""
+
 ATAC_QC_COLUMNS: Final[tuple[str, ...]] = tuple(BarcodeQc.header_columns())
 """Expected columns in ATAC QC files."""
 
@@ -48,7 +73,7 @@ RNA_QC_COLUMNS: Final[tuple[str, ...]] = (
 )
 """Expected columns in RNA QC files."""
 
-FRONT_COLUMNS: Final[tuple[str, ...]] = (
+FRONT_QC_COLUMNS: Final[tuple[str, ...]] = (
     "analysis_set_accession",
     "barcode_sample",
     "annotated",
@@ -58,44 +83,260 @@ FRONT_COLUMNS: Final[tuple[str, ...]] = (
 )
 """Columns that should come first in combined RNA + ATAC QC."""
 
+MANDATORY_METADATA_COLS: Final[tuple[str, ...]] = (
+    "barcode_sample",
+    "cell_name",
+    "cell_description",
+    "CL_id",
+    "CL_term_name",
+    "subsample",
+    "analysis_set_accession",
+)
+"""Columns that must be present in annotations files."""
 
-def load_metadata(metadata_loc: Path) -> pd.DataFrame:
-    """Load metadata file and perform basic checks."""
-    mandatory_columns = {
-        "barcode_sample",
-        "cell_name",
-        "cell_description",
-        "CL_id",
-        "CL_term_name",
-        "subsample",
-        "analysis_set_accession",
-    }
-    df = read_csv(metadata_loc)
-    for col in mandatory_columns:
-        if col not in df.columns:
-            raise ValueError(f"metadata must contain '{col}' column")
-    for subsample in df["subsample"].unique():
-        if "-" in subsample:
-            raise ValueError(
-                f"'subsample' column contained '{subsample}' containing invalid annotation values"
+OPTIONAL_METADATA_COLS: Final[tuple[str, ...]] = (
+    "matrix_file_accession",
+    "fragments_file_accession",
+    "cell_qualifier",
+)
+"""Columns that may be present in annotations files and should be used if they are."""
+
+ADDED_METADATA_COLS: Final[dict[str, tuple[str, ...]]] = {
+    "annotation": ("cell_name",),
+    "pseudobulk_id": ("cell_name", "subsample"),
+}
+"""Usedful derived columns that are not in the raw annotations file, and their raw dependencies."""
+
+METADATA_COLS: Final[tuple[str, ...]] = (
+    MANDATORY_METADATA_COLS + OPTIONAL_METADATA_COLS + tuple(ADDED_METADATA_COLS.keys())
+)
+"""All potentially wanted columns"""
+
+
+def _own_cgroup_dirs() -> list[Path]:
+    """Get this process's own cgroup directories, closest first, then their ancestors.
+
+    The OOM kill may be reported against the cgroup of the process or against any of its ancestors
+    (under SLURM the limit is set on the job's cgroup, not on the root one).
+    """
+    cgroup_dirs: list[Path] = []
+    try:
+        cgroup_report = Path("/proc/self/cgroup").read_text()
+    except OSError:
+        return [_CGROUP_ROOT]
+    for line in cgroup_report.splitlines():
+        # cgroup v2 lines are "0::<path>", cgroup v1 lines are "<id>:<controllers>:<path>"
+        _hierarchy, _, rest = line.partition(":")
+        controllers, _, cgroup_path = rest.partition(":")
+        if controllers and "memory" not in controllers.split(","):
+            continue
+        base = _CGROUP_ROOT if not controllers else _CGROUP_ROOT / "memory"
+        cgroup_dir = base / cgroup_path.lstrip("/")
+        while True:
+            cgroup_dirs.append(cgroup_dir)
+            if cgroup_dir == base or base not in cgroup_dir.parents:
+                break
+            cgroup_dir = cgroup_dir.parent
+    cgroup_dirs.append(_CGROUP_ROOT)
+    return cgroup_dirs
+
+
+def oom_kill_count() -> int | None:
+    """Get the number of times the kernel has OOM-killed a process in this cgroup.
+
+    Returns:
+        The OOM kill count, or None if it cannot be determined. That is the case on macOS (no
+        cgroups at all) and on cgroup v1 kernels before 4.13, such as CentOS 7, which report
+        whether a cgroup is currently out of memory but not how many processes have been killed.
+    """
+    for cgroup_dir in _own_cgroup_dirs():
+        for oom_file_name in _CGROUP_OOM_FILE_NAMES:
+            try:
+                oom_report = (cgroup_dir / oom_file_name).read_text()
+            except OSError:
+                continue
+            for line in oom_report.splitlines():
+                key, _, value = line.partition(" ")
+                if key == "oom_kill":
+                    try:
+                        return int(value)
+                    except ValueError:
+                        return None
+    return None
+
+
+def killed_worker_count(executor: ProcessPoolExecutor, logger: Logger) -> int | None:
+    """Get how many of a broken pool's worker processes were killed with SIGKILL.
+
+    SIGKILL is what the kernel OOM killer sends, and nothing else in normal operation sends it to a
+    worker: a worker that crashes exits on its own signal (e.g. SIGSEGV) or status, and the pool
+    shuts its remaining workers down with SIGTERM. So a SIGKILLed worker means the process was
+    killed from outside, which on a compute node means it ran out of memory.
+
+    Args:
+        executor: the process pool whose workers died.
+    Returns:
+        The number of workers killed with SIGKILL, or None if the pool does not expose its worker
+        processes (it is a private attribute, so treat it as unavailable rather than assuming zero).
+    """
+    worker_processes = getattr(executor, "_processes", None)
+    if worker_processes is None:
+        logger.warning("Unable to get worker processes form executor._processes")
+        return None
+    exit_codes = defaultdict(lambda: 0)
+    for process in worker_processes.values():
+        exit_codes[process.exitcode] += 1
+    exit_codes_str = ", ".join(f"{code}: {counts}" for code, counts in exit_codes.items())
+    logger.warning(f"Counts of exit codes from workers: {exit_codes_str}")
+    shutdown_codes = {-signal.SIGKILL, -signal.SIGTERM}
+    return sum(
+        1 if process.exitcode in shutdown_codes else 0 for process in worker_processes.values()
+    )
+
+
+def exit_if_oom_killed(
+    executor: ProcessPoolExecutor, oom_kills_before: int | None, logger: Logger
+) -> None:
+    """Exit with the out-of-memory status if a worker process was killed for running out of memory.
+
+    A worker process that is OOM-killed only reaches the parent process as a BrokenProcessPool, so
+    without this the tool would exit with a generic failure status and the pipeline could not tell
+    that the task should be retried with more memory. Only exits when the kill can actually be
+    attributed to running out of memory: otherwise it returns, and the caller should re-raise the
+    original error so that a crashing worker is not misreported (and retried) as an OOM.
+
+    Args:
+        executor: the process pool whose workers died.
+        oom_kills_before: OOM kill count from oom_kill_count(), taken before the work started.
+        logger: Logger to report the out-of-memory kill with.
+    """
+    match killed_worker_count(executor, logger):
+        case 0:
+            # got a definitive count, but no workers were killed
+            return
+        case None:
+            # did not get a difinitive count, try to get a reporting from cgroup counter
+            # for linux kernels new enough to report it
+            oom_kills_after = oom_kill_count()
+            if oom_kills_before is None or oom_kills_after is None:
+                logger.error(
+                    "Unable to determine if any workers were killed due to missing cgroup data."
+                )
+                return
+            elif oom_kills_after > oom_kills_before:
+                logger.error(
+                    f"the kernel reported {oom_kills_after - oom_kills_before} out-of-memory kill(s) "
+                    "in this cgroup"
+                )
+                raise SystemExit(OOM_EXIT_STATUS)
+            else:
+                # got a definitive count, but no oom kills:
+                return
+        case _ as num_killed:
+            logger.error(
+                f"{num_killed} worker processes ran out of memory. Exiting with status {OOM_EXIT_STATUS} so "
+                "that the task is retried with more memory."
             )
-    _map_annotations_and_pseudobulk_ids(df)
+            raise SystemExit(OOM_EXIT_STATUS)
+
+
+def load_metadata(
+    metadata_loc: Path,
+    wanted_cols: Iterable[str] | None = METADATA_COLS,
+) -> pd.DataFrame:
+    """Load metadata file and perform basic checks."""
+    # determine which columns we need to read in
+    if wanted_cols is None:
+        usecols = None
+        added_cols = set()
+    else:
+        usecols = []
+        dependency_cols = set()
+        added_cols = set()
+        available_columns = (
+            read_csv(metadata_loc, nrows=0).columns
+            if len(set(wanted_cols).intersection(OPTIONAL_METADATA_COLS)) > 0
+            else None
+        )
+
+        for col in wanted_cols:
+            col_dependencies = ADDED_METADATA_COLS.get(col, None)
+            if col_dependencies is None:
+                if available_columns is None or col in available_columns:
+                    usecols.append(col)
+            else:
+                added_cols.add(col)
+                dependency_cols.update(col_dependencies)
+        usecols.extend(dependency_cols.difference(usecols))
+    # read in the TSV
+    df = read_csv(metadata_loc, usecols=usecols)
+    if len(added_cols) > 0:
+        # if we need to add any derived cols, add them
+        _add_derived_metadata(df, added_cols=added_cols)
+    if wanted_cols is not None:
+        # drop the source columns that were only read so that the added ones could be derived
+        df = df.loc[:, [col for col in wanted_cols if col in df.columns]]
+    # check 'subsample' contains valid values
+    if "subsample" in df.columns:
+        for subsample in df["subsample"].unique():
+            if "-" in subsample:
+                raise ValueError(
+                    f"'subsample' column contained '{subsample}' containing invalid annotation values"
+                )
+    # save space by converting repeat values to categoricals
+    for col_name, col_values in df.items():
+        if col_values.nunique() * 2 < len(col_values):
+            df[col_name] = col_values.astype("category")
     return df
 
 
-def _map_annotations_and_pseudobulk_ids(metadata_df) -> None:
+def sanitize_to_ascii_underscore(text: str) -> str:
+    """Replace unicode characters with similar ascii, replace whitespace with underscores."""
+    # 1. Normalize Unicode to NFKD form to separate characters from accents
+    # 2. Encode to ASCII and ignore characters that cannot be converted
+    # 3. Decode back to a string
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+    # 4. Replace one or more whitespace characters with a single underscore
+    # \s+ matches spaces, tabs, and newlines
+    return re.sub(r"\s+", "_", text)
+
+
+def _get_cell_name_to_annotation_dict(cell_name: pd.Series) -> dict[str, str]:
+    """Get a 1-to-1 map from cell_name to safe ascii annotation.
+
+    Append indices as needed to guarantee uniqueness.
     """
-    Update metadata_df in place with new 'annotation' and 'pseudobulk_id' columns.
+    sorted_cell_names = sorted(cell_name.unique())
+    reversed_dict = defaultdict(list)
+    for cell_name in sorted_cell_names:
+        reversed_dict[sanitize_to_ascii_underscore(cell_name)].append(cell_name)
+    while any(len(cell_names) > 1 for cell_names in reversed_dict.values()):
+        old_reversed_dict, reversed_dict = reversed_dict, defaultdict(list)
+        for sanitized_name in sorted(old_reversed_dict.keys()):
+            cell_names = old_reversed_dict[sanitized_name]
+            if len(cell_names) == 1:
+                reversed_dict[sanitized_name].append(cell_names[0])
+            else:
+                for idx, cell_name in enumerate(sorted(cell_names), start=1):
+                    reversed_dict[f"{sanitized_name}_{idx}"].append(cell_name)
+    return {cell_names[0]: sanitized_name for sanitized_name, cell_names in reversed_dict.items()}
+
+
+def _add_derived_metadata(metadata_df, added_cols: set[str]) -> None:
+    """
+    Update metadata_df in place with new 'annotation' and 'pseudobulk_id' columns if they are in added_cols
     """
     # Cell name to annotation mapping
-    cell_name_to_annotation_dict = {
-        x: f"annotation_{i}" for i, x in enumerate(sorted(metadata_df["cell_name"].unique()))
-    }
+    cell_name_to_annotation_dict = _get_cell_name_to_annotation_dict(metadata_df["cell_name"])
     # Map cell names to annotations in metadata_df
-    metadata_df["annotation"] = metadata_df["cell_name"].map(cell_name_to_annotation_dict)
-    metadata_df["pseudobulk_id"] = metadata_df.apply(
-        lambda row: f"{row['annotation']}-{row['subsample']}", axis=1
+    metadata_df["annotation"] = (
+        metadata_df["cell_name"].map(cell_name_to_annotation_dict).astype("category")
     )
+    if "pseudobulk_id" in added_cols:
+        metadata_df["pseudobulk_id"] = metadata_df.apply(
+            lambda row: f"{row['annotation']}-{row['subsample']}", axis=1
+        ).astype("category")
 
 
 def map_barcodes_to_pseudobulks(metadata_df: pd.DataFrame) -> Mapping[Barcode, PseudobulkName]:
@@ -160,25 +401,9 @@ def update_tss_insertions(
     if tss_idx_delta > 0:
         # there is >= 1 overlap, update the counts of insertion sites
         tss_right_idx = tss_left_idx + tss_idx_delta
-        # for idx in range(tss_left_idx, tss_right_idx):
-        #     tss = tss_vec[idx]
-        #     strand = strand_vec[idx]
-        #     tss_insertions[half_window + (position - tss) * strand] += 1
         update_insertions_range(
             tss_insertions, tss_vec, strand_vec, tss_left_idx, tss_right_idx, half_window, position
         )
-
-        # this would be the vectorized version, but it is actually slower, likely because of one of
-        # these issues:
-        # 1. numpy tries to vectorize over threads and creates contention / overhead
-        # 2. intermediate arrays are created and numpy malloc blocks across threads.
-        # When python 3.15 is stable, it may be worth revisiting, although it may require more than
-        # one "index_buffer" to prevent creation of intemediate arrays
-        # index_buffer[:tss_idx_delta] = offset + strand_vec[tss_left_idx:tss_right_idx] * (
-        #     position - tss_vec[tss_left_idx:tss_right_idx]
-        # )
-        # tss_insertions[index_buffer[:tss_idx_delta]] += 1
-        # Rather than vectorizing, it may also be possible to create a ufunc to do this in cython
 
 
 @contextmanager
@@ -202,18 +427,24 @@ def elapsed_time(elapsed_secs: float) -> str:
         return f"{hours}:{minutes:02d}:{seconds:06.3f}"
 
 
+def get_sep_from_path(csv_or_tsv: Path) -> Literal["\t", ","]:
+    """Guess the file separator from the path."""
+    match csv_or_tsv.suffixes:
+        case [*_parts, ".tsv"] | [*_parts, ".tsv", ".gz"]:
+            return "\t"
+        case [*_parts, ".csv"] | [*_parts, ".csv", ".gz"]:
+            return ","
+        case _:
+            raise ValueError(
+                f"Could not infer separator for file {csv_or_tsv} with suffix {csv_or_tsv.suffix}. Please "
+                "specify separator with 'sep' argument."
+            )
+
+
 def read_csv(path: Path, sep: str | None = None, **kwargs) -> pd.DataFrame:
+    """Read (possibly compressed) CSV or TSV using suffix to determine field separator."""
     if sep is None:
-        match path.suffixes:
-            case [*_parts, ".tsv"] | [*_parts, ".tsv", ".gz"]:
-                sep = "\t"
-            case [*_parts, ".csv"] | [*_parts, ".csv", ".gz"]:
-                sep = ","
-            case _:
-                raise ValueError(
-                    f"Could not infer separator for file {path} with suffix {path.suffix}. Please "
-                    "specify separator with 'sep' argument."
-                )
+        sep = get_sep_from_path(path)
     return pd.read_csv(
         f"{path}",
         sep=sep,
@@ -228,9 +459,10 @@ def load_atac_qc(
     atac_qc_dir: Path,
     need_tss: Literal[False],
     logger: Logger,
-    log_lock: Lock | None = None,
+    log_lock: LogLock | None = None,
     row_filter: Callable[[pd.DataFrame], pd.Series[bool]] | None = None,
     usecols: Callable[[Hashable], bool] | Sequence[str] | Sequence[int] | None = None,
+    accessions: set[str] | None = None,
 ) -> pd.DataFrame: ...
 
 
@@ -239,9 +471,10 @@ def load_atac_qc(
     atac_qc_dir: Path,
     need_tss: Literal[True],
     logger: Logger,
-    log_lock: Lock | None = None,
+    log_lock: LogLock | None = None,
     row_filter: Callable[[pd.DataFrame], pd.Series[bool]] | None = None,
     usecols: Callable[[Hashable], bool] | Sequence[str] | Sequence[int] | None = None,
+    accessions: set[str] | None = None,
 ) -> tuple[pd.DataFrame, COUNTS_MATRIX]: ...
 
 
@@ -249,9 +482,10 @@ def load_atac_qc(
     atac_qc_dir: Path,
     need_tss: bool,
     logger: Logger,
-    log_lock: Lock | None = None,
+    log_lock: LogLock | None = None,
     row_filter: Callable[[pd.DataFrame], pd.Series[bool]] | None = None,
     usecols: Callable[[Hashable], bool] | Sequence[str] | Sequence[int] | None = None,
+    accessions: set[str] | None = None,
 ) -> tuple[pd.DataFrame, COUNTS_MATRIX] | pd.DataFrame:
     """
     Load combined atac qc (generated per analysis accession, not by pseudobulk).
@@ -271,6 +505,9 @@ def load_atac_qc(
             if a sequence of indices, those column indices are kept.
             if a func from column label to bool, columns where the func return True are kept.
             If None, keep all columns.
+        accessions: An optional set of analysis set accessions to load QC for. If provided, only the
+            QC files of those accessions are read, which lets a worker load just the QC it needs. If
+            None, load the QC of every accession in atac_qc_dir.
     Returns:
         combined ATAC-seq QC DataFrame and sparse TSS counts matrix if need_tss is True,
         otherwise just combined ATAC-seq DataFrame
@@ -282,6 +519,8 @@ def load_atac_qc(
     tss_list: list[COUNTS_MATRIX] = []
     for tsv in atac_qc_dir.glob("*.tsv"):
         analysis_set_accession = tsv.name.split(".", 1)[0]
+        if accessions is not None and analysis_set_accession not in accessions:
+            continue
         with _log_lock:
             logger.info(f"loading QC for analysis accession {analysis_set_accession}")
         atac_qc = read_csv(tsv, usecols=usecols)
@@ -310,7 +549,7 @@ def load_atac_qc(
             case _:
                 pass
 
-        atac_combined_qc = pd.DataFrame([], pd.Index(atac_cols))
+        atac_combined_qc = pd.DataFrame([], columns=pd.Index(atac_cols))
         tss_counts = scipy.sparse.csr_array(np.empty((0, 4001), np.uint16))
     else:
         atac_combined_qc = pd.concat(atac_combined_qc_list, axis=0, ignore_index=True)
@@ -322,8 +561,8 @@ def load_atac_qc(
 def _reorder_qc_columns(combined_qc: pd.DataFrame) -> pd.DataFrame:
     """Reorder columns to move selected columns to the front."""
     # Move shared columns to the front, and fill out the remaining columns in order afterwards
-    col_order = [x for x in FRONT_COLUMNS if x in combined_qc.columns] + [
-        x for x in combined_qc.columns if x not in set(FRONT_COLUMNS)
+    col_order = [x for x in FRONT_QC_COLUMNS if x in combined_qc.columns] + [
+        x for x in combined_qc.columns if x not in set(FRONT_QC_COLUMNS)
     ]
     # do the reorder
     return combined_qc[col_order]
@@ -334,7 +573,7 @@ def merge_rna_and_atac_qc(
     rna_qc: pd.DataFrame,
     atac_qc: pd.DataFrame,
     logger: Logger,
-    log_lock: Lock | None = None,
+    log_lock: LogLock | None = None,
 ) -> pd.DataFrame:
     """Combined RNA QC and ATAC QC into one DataFrame object by merging on shared columns.
 

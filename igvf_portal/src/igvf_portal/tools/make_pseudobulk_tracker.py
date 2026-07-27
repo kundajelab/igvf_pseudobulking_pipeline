@@ -1,54 +1,41 @@
 import csv
-import gzip
 import logging
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import ProcessPoolExecutor, wait
-from io import StringIO
 from pathlib import Path
-from typing import TextIO, cast
+from types import MappingProxyType
+from typing import cast
 
 import gspread
-import igvf_utils
-from igvf_client import ApiClient, Configuration, IgvfApi
+from igvf_client import IgvfApi
 from igvf_client.models.analysis_set import AnalysisSet
 from igvf_client.models.pseudobulk_set import PseudobulkSet
 from igvf_client.models.search_result_item import SearchResultItem
 from igvf_client.models.tabular_file import TabularFile
 
 from igvf_portal import utils
+from igvf_portal.annotations_file_qc import AnnotationsFileQc
 from igvf_portal.constants import VERSION
-from igvf_portal.enums import PseudobulkUploadStatus
+from igvf_portal.enums import IgvfMode, PseudobulkUploadStatus
 from igvf_portal.igvf_lookup import IgvfLookup
 from igvf_portal.types import AccessionId, PseudobulkTrackerRow
 
-_STATUS_ROW_COLORS: dict[PseudobulkUploadStatus, dict[str, float]] = {
-    PseudobulkUploadStatus.NEEDS_FIX: {"red": 0.957, "green": 0.8, "blue": 0.8},
-    PseudobulkUploadStatus.UNATTEMPTED: {"red": 1.0, "green": 0.949, "blue": 0.8},
-    PseudobulkUploadStatus.COMPLETE: {"red": 0.851, "green": 0.918, "blue": 0.827},
-}
-
-_REQUIRED_ANNOTATION_COLUMNS: frozenset[str] = frozenset(
-    {
-        "barcode_sample",
-        "cell_name",
-        "cell_description",
-        "CL_id",
-        "CL_term_name",
-        "subsample",
-        "analysis_set_accession",
-    }
+_STATUS_ROW_COLORS: Mapping[PseudobulkUploadStatus, Mapping[str, float]] = (
+    MappingProxyType(
+        {
+            PseudobulkUploadStatus.NEEDS_FIX: MappingProxyType(
+                {"red": 0.957, "green": 0.8, "blue": 0.8}
+            ),
+            PseudobulkUploadStatus.UNATTEMPTED: MappingProxyType(
+                {"red": 1.0, "green": 0.949, "blue": 0.8}
+            ),
+            PseudobulkUploadStatus.COMPLETE: MappingProxyType(
+                {"red": 0.851, "green": 0.918, "blue": 0.827}
+            ),
+        }
+    )
 )
-
-
-def _read_tsv_bytes(f_in: TextIO) -> list[list[str]]:
-    reader = csv.reader(f_in, delimiter="\t")
-    return [row for row in reader]
-
-
-def _read_tsv(tsv: Path) -> list[list[str]]:
-    with tsv.open("rt") as f_in:
-        return _read_tsv_bytes(f_in)
 
 
 def _clear_conditional_format_rules(
@@ -126,7 +113,7 @@ def upload_dataframe_to_google_sheet(
     # Open the existing Google Sheet.
     spreadsheet = client.open_by_url(spreadsheet_url)
 
-    rows = _read_tsv(rows_tsv)
+    rows = utils.read_tsv(rows_tsv)
     fields = list(PseudobulkTrackerRow.__annotations__.keys())
     num_cols = len(fields)
     num_rows = len(rows)
@@ -204,48 +191,6 @@ def _get_pseudobulk_status_and_date(
             return PseudobulkUploadStatus.NEEDS_FIX, date
 
 
-def _collect_uniform_pipeline_status(
-    analysis_sets: Iterable[AnalysisSet],
-) -> set[str] | None:
-    statuses = set()
-    for analysis_set in analysis_sets:
-        status = analysis_set.uniform_pipeline_status
-        match status:
-            case None:
-                return None
-            case _:
-                statuses.add(status)
-    return statuses
-
-
-def _qc_annotations_file(
-    api: IgvfApi, annotations_file: TabularFile
-) -> tuple[set[str], set[str] | None]:
-    if annotations_file.accession is None:
-        raise ValueError("Missing accession for annotations file")
-    annotations_compressed_bytes = api.download(annotations_file.accession)
-    annotations_decompressed_str = gzip.decompress(
-        annotations_compressed_bytes
-    ).decode()
-    tsv_rows = _read_tsv_bytes(StringIO(annotations_decompressed_str))
-    missing_columns = set(_REQUIRED_ANNOTATION_COLUMNS.difference(tsv_rows[0]))
-
-    if "analysis_set_accession" in missing_columns:
-        on_uniformly_processed_data = None
-    else:
-        column_index = next(
-            idx
-            for idx, column in enumerate(tsv_rows[0])
-            if column == "analysis_set_accession"
-        )
-        analysis_set_accessions = {row[column_index] for row in tsv_rows[1:]}
-        on_uniformly_processed_data = _collect_uniform_pipeline_status(
-            cast(AnalysisSet, api.get_by_id(x).actual_instance)
-            for x in analysis_set_accessions
-        )
-    return missing_columns, on_uniformly_processed_data
-
-
 def _process_analysis_set(
     api: IgvfApi, igvf_lookup: IgvfLookup, analysis_set: AnalysisSet
 ) -> tuple[TabularFile | None, PseudobulkUploadStatus, str | None]:
@@ -270,7 +215,7 @@ def _process_analysis_set(
 
 def _get_tracker_row(
     search_result_item: SearchResultItem,
-) -> tuple[str | None, PseudobulkTrackerRow | None]:
+) -> tuple[str | None, PseudobulkTrackerRow | None, frozenset[str] | None]:
     # Get analysis set
     analysis_set = cast(AnalysisSet, search_result_item.actual_instance)
     annotations_file, pseudobulk_status, upload_date = _process_analysis_set(
@@ -279,28 +224,28 @@ def _get_tracker_row(
 
     # Save annotation file info
     if annotations_file is None:
-        return analysis_set.accession, None
+        return analysis_set.accession, None, None
     else:
-        missing_columns, uniform_pipeline_status = _qc_annotations_file(
-            api, annotations_file
-        )
+        annotations_file_qc = AnnotationsFileQc.qc(api, annotations_file.accession)
         row: PseudobulkTrackerRow = {
             "principal analysis set accession": f"{analysis_set.accession}",
             "annotation file accession": f"{annotations_file.accession}",
             "lab": f"{annotations_file.lab}",
             "pseudobulking status": pseudobulk_status.value,
             "processed date": "" if upload_date is None else upload_date,
-            "missing annotations columns": ",".join(missing_columns),
-            "uniform pipeline status": "UNKNOWN"
-            if uniform_pipeline_status is None
-            else ",".join(uniform_pipeline_status),
+            "missing annotations columns": ",".join(
+                annotations_file_qc.missing_columns
+            ),
+            "uniform pipeline status": annotations_file_qc.uniform_pipeline_status,
         }
-        return analysis_set.accession, row
+        return analysis_set.accession, row, annotations_file_qc.cl_ids
 
 
 def _iter_rows(
     search_result_items: Iterable[SearchResultItem] | None,
     logger: logging.Logger,
+    igvf_mode: IgvfMode,
+    cl_ids_to_update: set[str],
     num_workers: int | None = None,
 ) -> Iterator[PseudobulkTrackerRow]:
     """Iterate over principal analysis sets and yield a PseudobulkTrackerRow with details of their status."""
@@ -311,7 +256,7 @@ def _iter_rows(
         if num_workers is None:
             num_workers = os.cpu_count()
     with ProcessPoolExecutor(
-        max_workers=num_workers, initializer=_worker_initalizer
+        max_workers=num_workers, initializer=_worker_initalizer, initargs=(igvf_mode,)
     ) as executor:
         futures = [
             executor.submit(_get_tracker_row, item) for item in search_result_items
@@ -319,83 +264,47 @@ def _iter_rows(
         for future in futures:
             wait([future])
             match future.result():
-                case accession, None:
+                case accession, None, _:
                     logger.warning(
                         f"Found analysis set {accession} with no annotation file."
                     )
-                case accession, row:
+                case accession, row, cl_ids:
                     date_info = (
                         ""
                         if len(row["processed date"]) == 0
                         else f" (uploaded {row['processed date']})"
                     )
+                    num_cl_ids = 0 if cl_ids is None else len(cl_ids)
                     logger.info(
-                        f"Found analysis set {accession} with status '{row['pseudobulking status']}'{date_info}."
+                        f"Found analysis set {accession} with status '{row['pseudobulking status']}'{date_info} and {num_cl_ids} unique CL_ids."
                     )
+                    if cl_ids is not None:
+                        cl_ids_to_update.update(cl_ids)
                     yield row
-
-    # for search_result_item in search_result_items:
-    #     # Get analysis set
-    #     analysis_set = cast(AnalysisSet, search_result_item.actual_instance)
-    #     annotations_file, pseudobulk_status, upload_date = _process_analysis_set(
-    #         api, igvf_lookup, analysis_set
-    #     )
-
-    #     # Save annotation file info
-    #     if annotations_file is None:
-    #         logger.warning(
-    #             f"Found analysis set {analysis_set.accession} with no annotation file."
-    #         )
-    #     else:
-    #         missing_columns, uniform_pipeline_status = _qc_annotations_file(api, annotations_file)
-    #         row: PseudobulkTrackerRow = {
-    #             "principal analysis set accession": f"{analysis_set.accession}",
-    #             "annotation file accession": f"{annotations_file.accession}",
-    #             "lab": f"{annotations_file.lab}",
-    #             "pseudobulking status": pseudobulk_status.value,
-    #             "processed date": "" if upload_date is None else upload_date,
-    #             "missing annotations columns": ",".join(missing_columns),
-    #             "uniform pipeline status": "UNKNOWN" if uniform_pipeline_status is None else ",".join(uniform_pipeline_status)
-    #         }
-    #         date_info = "" if upload_date is None else f" (uploaded {upload_date})"
-    #         logger.info(
-    #             f"Found analysis set {analysis_set.accession} with status '{row['pseudobulking status']}'{date_info}."
-    #         )
-    #         yield row
-
-
-def _open_api() -> tuple[IgvfApi, IgvfLookup]:
-    utils.check_access_keys()
-    config = Configuration(
-        access_key=os.environ["IGVF_API_KEY"],
-        secret_access_key=os.environ["IGVF_SECRET_KEY"],
-    )
-    client = ApiClient(config)
-    api = IgvfApi(client)
-    igvf_lookup = IgvfLookup.new("prod")
-    return api, igvf_lookup
 
 
 api: IgvfApi
 igvf_lookup: IgvfLookup
 
 
-def _worker_initalizer():
+def _worker_initalizer(igvf_mode: IgvfMode):
     global api
     global igvf_lookup
-    utils.setup_logger(igvf_utils.debug_logger, logging.WARNING)
-    utils.setup_logger(logging.getLogger(name="root"), logging.WARNING)
-    api, igvf_lookup = _open_api()
+    utils.fix_igvf_logging(level=logging.WARNING)
+    api = utils.open_igvf_api(igvf_mode=igvf_mode)
+    igvf_lookup = IgvfLookup.new(igvf_mode=igvf_mode)
 
 
 def make_pseudobulk_tracker(
     *,
     output: Path = Path("pseudobulk_status.tsv"),
+    cli_ids_out: Path = Path("missing_cl_ids.txt"),
     compute: bool = True,
     upload: bool = False,
     spreadsheet_url: str = "https://docs.google.com/spreadsheets/d/1pYhl_ffq3pz_Y9zXmhqU62Ob5cLmzuQo_l5r6Bm7bZ0/edit",
     google_service_account_json: Path | None = None,
     num_workers: int = -1,
+    igvf_mode: IgvfMode = IgvfMode.prod,
 ) -> None:
     """Write pseudobulk data set status to a table.
 
@@ -419,7 +328,7 @@ def make_pseudobulk_tracker(
 
     if compute:
         # Log in to IGVF Portal
-        api, _ = _open_api()
+        api = utils.open_igvf_api(igvf_mode=igvf_mode)
 
         # Query all primary analysis sets with cell annotations
         search_results = api.search(
@@ -432,9 +341,31 @@ def make_pseudobulk_tracker(
             },
         )
 
-        # Iterate through all queried primary analysis sets
-        rows_iter = _iter_rows(search_results.graph, logger, num_workers=num_workers)
+        # Iterate through all queried primary analysis sets.
+        # As a side effect update a set with all the CL_ids
+        cl_ids = set()
+        rows_iter = _iter_rows(
+            search_results.graph,
+            logger=logger,
+            igvf_mode=igvf_mode,
+            cl_ids_to_update=cl_ids,
+            num_workers=num_workers,
+        )
         _write_tsv(output, rows_iter)
+        # now we've iterated through the rows and have all the unique CL_ids. Find the existing CL_ids on the portal
+        search_results = api.search(
+            type=["SampleTerm"], limit="all", field_filters={"status!": "deleted"}
+        )
+        portal_cl_ids = (
+            set()
+            if search_results.graph is None
+            else {item.term_id for item in search_results.graph}
+        )
+        missing_ids = sorted(cl_ids.difference(portal_cl_ids))
+        cli_ids_out.parent.mkdir(exist_ok=True, parents=True)
+        with cli_ids_out.open("wt") as f_out:
+            for missing_id in missing_ids:
+                f_out.write(f"{missing_id}\n")
 
     if upload:
         if (

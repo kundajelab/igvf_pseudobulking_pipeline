@@ -22,7 +22,7 @@ enrichment calculations.
 """
 
 
-@dataclasses.dataclass(slots=True, weakref_slot=False, kw_only=True)
+@dataclasses.dataclass(slots=True, kw_only=True)
 class BarcodeQc:
     tss_insertions: COUNTS_ARRAY
     fragments: list[Fragment] | None = dataclasses.field(default_factory=list)

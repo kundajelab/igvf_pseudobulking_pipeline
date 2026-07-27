@@ -2,8 +2,7 @@ import dataclasses
 from collections.abc import Iterable
 from typing import cast
 
-from igvf_utils.connection import Connection
-
+from igvf_portal.connection import PConnection
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import (
     AnalysisStep,
@@ -18,7 +17,7 @@ from igvf_portal.types import (
 
 @dataclasses.dataclass(kw_only=True, slots=True)
 class IgvfLookup:
-    connection: Connection
+    connection: PConnection
     igvf_mode: IgvfMode
     record_lookups: dict[AccessionId | Alias, IgvfRecord] = dataclasses.field(
         default_factory=dict
@@ -29,7 +28,7 @@ class IgvfLookup:
         _igvf_mode = (
             igvf_mode if isinstance(igvf_mode, IgvfMode) else IgvfMode[igvf_mode]
         )
-        return cls(connection=Connection(igvf_mode=_igvf_mode), igvf_mode=_igvf_mode)
+        return cls(connection=PConnection(igvf_mode=_igvf_mode), igvf_mode=_igvf_mode)
 
     def lookup_record(self, key: AccessionId | Alias) -> IgvfRecord:
         """Lookup record, using table of previous lookups if it's present, otherwise adding to table."""

@@ -32,7 +32,7 @@
     },
     "species": {
       "type": "string",
-      "default": "human",
+      "default": null,
       "enum": ["human", "mouse"],
       "description": "Species with pre-built data files to process"
     },
@@ -67,12 +67,12 @@
     "workspace": {
       "type": "string",
       "format": "directory-path",
-      "default": "output",
+      "default": "workspace",
       "description": "folder to store all pipeline temporary files and outputs"
     },
     "publish_mode": {
       "type": "string",
-      "default": "copy",
+      "default": "symlink",
       "enum": ["copy", "link", "move", "symlink", "copyNoFollow", "rellink"],
       "description": "Mode for publishing output files. See nextflow documentation for publishDir for more details."
     },
@@ -88,8 +88,13 @@
     },
     "slurm_queue": {
       "type": "string",
-      "default": "normal",
+      "default": "owners",
       "description": "Queue for launching SLURM jobs."
+    },
+    "slurm_queue_size": {
+      "type": "number",
+      "default": 1000,
+      "description": "How many slurm jobs may be submitted (pending + running) at once. Must stay under the queue's MaxSubmitJobsPU: 3000 on owners, 2000 on normal)."
     },
     "oom_max_retries": {
       "type": "number",
@@ -100,7 +105,11 @@
       "type": "number",
       "default": 5,
       "description": "Max number of retries due to cluster preemption."
+    },
+    "trace_timestamp": {
+      "type": "string",
+      "description": "Time stamp used for nextflow reports and traces. Defaults to current date and time."
     }
   },
-  "required": ["metadata_file"]
+  "required": ["metadata_file", "principal_analysis"]
 }

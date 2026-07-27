@@ -16,13 +16,16 @@ process IGVF_UPLOAD {
 
     input:
         tuple val(principal_analysis), val(dry_run), val(igvf_mode)
+        path(metadata_file, arity: "1")
         path(cell_name_to_annotation_mapping, name: "./*", arity: "1")
-        path(pseudobulk_counts, name: "pseudobulks/*", arity: "1..*")
-        path(pseudobulk_h5ads, name: "pseudobulks/*", arity: "1..*")
-        path(fragments, name: "pseudobulks/*", arity: "1..*")
-        path(peaks_bigwig, name: "pseudobulks/*", arity: "1..*")
-        path(peaks_narrowpeak, name: "pseudobulks/*", arity: "1..*")
-        path(peaks_pval_bigwig, name: "pseudobulks/*", arity: "1..*")
+        path(pseudobulk_counts, name: "pseudobulks/*", arity: "0..*")
+        path(pseudobulk_h5ads, name: "pseudobulks/*", arity: "0..*")
+        path(fragments, name: "pseudobulks/*", arity: "0..*")
+        path(fragments_bigbed, name: "pseudobulks/*", arity: "0..*")
+        path(peaks_bigwig, name: "pseudobulks/*", arity: "0..*")
+        path(peaks_narrowpeak, name: "pseudobulks/*", arity: "0..*")
+        path(peaks_pval_bigwig, name: "pseudobulks/*", arity: "0..*")
+        path(peaks_bigbed, name: "pseudobulks/*", arity: "0..*")
         path(pseudobulk_qc, name: "pseudobulks/*", arity: "1..*")
         path(combined_pseudobulk_qc, name: "./pseudobulk_qc.tsv.gz", arity: "1")
         path(accession_qcs, name: "analysis_accession_qc_reports/*", arity: "1..*")
@@ -69,9 +72,11 @@ process IGVF_UPLOAD {
     igvf-portal gen-upload-script \
         . \
         --input-file-sets "${principal_analysis}" \
+        --metadata-file "${metadata_file}" \
+        --annotations-tsv "${cell_name_to_annotation_mapping}" \
         ${dry_run ? "--dry-run" : ""} \
         --igvf-mode "${igvf_mode}"
-    
+
     1>&2 echo "Running upload script:"
     ./upload.sh
     """

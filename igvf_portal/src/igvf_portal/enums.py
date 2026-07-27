@@ -1,3 +1,4 @@
+import logging
 from enum import (
     Enum,
     StrEnum,
@@ -49,6 +50,14 @@ class ContentType(Enum):
     MATRIX = "cell by gene matrix"
     FRAGMENTS = "fragments"
 
+    @property
+    def extension(self) -> str:
+        match self:
+            case ContentType.MATRIX:
+                return "h5ad"
+            case ContentType.FRAGMENTS:
+                return "bed.gz"
+
 
 class IgvfMode(StrEnum):
     """Enum for valid IGVF Portal access modes."""
@@ -56,6 +65,16 @@ class IgvfMode(StrEnum):
     prod = "prod"
     staging = "staging"
     sandbox = "sandbox"
+
+    @property
+    def portal_api_url(self) -> str:
+        match self:
+            case IgvfMode.prod:
+                return "https://api.data.igvf.org"
+            case IgvfMode.staging:
+                return "https://api.staging.igvf.org"
+            case IgvfMode.sandbox:
+                return "https://api.staging.igvf.org"
 
 
 class OutputCategory(Enum):
@@ -75,3 +94,20 @@ class PseudobulkUploadStatus(Enum):
     UNATTEMPTED = "unattempted"
     COMPLETE = "complete"
     NEEDS_FIX = "needs-fix"
+
+
+class MultipleRecordsAction(Enum):
+    """Enum to describe action to take if there are multiple records that could be download."""
+
+    KEEP_FILTERED = "keep-filtered"
+    KEEP_UNFILTERED = "keep-unfiltered"
+    RAISE = "raise"
+
+
+class LogLevel(Enum):
+    info = logging.INFO
+    debug = logging.DEBUG
+    warning = logging.WARNING
+    error = logging.ERROR
+    critical = logging.CRITICAL
+    fatal = logging.FATAL

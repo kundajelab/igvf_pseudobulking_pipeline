@@ -47,8 +47,7 @@ process WRITE_SUMMARY {
             <(echo -e "${accession_ids.join('\\n')}")
     } > "${input_summary_stats}"
 
-
-    # 2. create a temporary directory in case pandas/pola.rs are writing temporary files    
+    # 2. create a temporary directory in case pandas/pola.rs are writing temporary files
     export TMPDIR=\$(mktemp -d -p .)
     trap 'rm -rf "\$TMPDIR"' EXIT
 

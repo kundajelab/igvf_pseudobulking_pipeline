@@ -1,4 +1,6 @@
-from typing import NewType, NotRequired, TypedDict
+import dataclasses
+from collections.abc import Mapping
+from typing import Literal, NewType, NotRequired, Protocol, TypedDict, cast
 
 PseudobulkId = NewType("PseudobulkId", str)
 
@@ -23,7 +25,9 @@ class AnnotationRow(TypedDict):
     annotation: CellType
     CL_id: CellType
     cell_description: CellType
+    CL_term_name: CellType
     subsample: SampleId
+    cell_qualifier: NotRequired[CellType]
 
 
 class UploadRow(TypedDict):
@@ -32,6 +36,7 @@ class UploadRow(TypedDict):
     lab: str
     file_set: NotRequired[str]
     file_set_type: NotRequired[str]
+    file_size: NotRequired[int]
     file_format: NotRequired[str]
     content_type: NotRequired[str]
     md5sum: NotRequired[str]
@@ -50,18 +55,65 @@ class UploadRow(TypedDict):
     documents: NotRequired[str]
 
 
-class IgvfRecord(TypedDict):
-    accession: AccessionId
-    aliases: list[Alias]
-    input_for: NotRequired[list[AccessionId]]
-    input_file_sets: list[IgvfRecord]
-    files: list[IgvfRecord]
-    content_type: str
-    controlled_access: bool
-    s3_uri: str
-    submitted_file_name: str
-    status: str
-    audit: dict[str, object]
+IgvfRecord = TypedDict(
+    "IgvfRecord",
+    {
+        "@type": list[str],
+        "accession": AccessionId,
+        "aliases": list[Alias],
+        "input_for": NotRequired[list[AccessionId]],
+        "input_file_sets": list["IgvfRecord"],
+        "file_set": NotRequired["IgvfRecord"],
+        "file_set_type": NotRequired["str"],
+        "files": list["IgvfRecord"],
+        "content_type": str,
+        "controlled_access": NotRequired[bool],
+        "s3_uri": str,
+        "href": str,
+        "submitted_file_name": str,
+        "status": str,
+        "audit": dict[str, object],
+        "reference_files": list[str],
+        "assembly": str,
+        "term_name": NotRequired[str],
+        "md5sum": NotRequired[str],
+        "summary": NotRequired[str],
+    },
+)
+
+
+@dataclasses.dataclass(slots=True, frozen=True, kw_only=True)
+class AnnotationAccessions:
+    """Class for holding input accession IDs"""
+
+    analysis_set_accession: AccessionId
+    cell_name: CellType
+    subsample: SampleId
+    matrix_file_accession: AccessionId | None = None
+    fragments_file_accession: AccessionId | None = None
+
+    @classmethod
+    def from_csv_row(cls, row: dict[str, str]) -> AnnotationAccessions:
+        analysis_set_accession = row.get("analysis_set_accession", None)
+        if analysis_set_accession is None:
+            raise ValueError("Must specify analysis_set_accession")
+        cell_name = row.get("cell_name", None)
+        if cell_name is None:
+            raise ValueError("Must specify cell_name")
+        subsample = row.get("subsample", None)
+        if subsample is None:
+            raise ValueError("Must specify subsample")
+        return AnnotationAccessions(
+            analysis_set_accession=AccessionId(analysis_set_accession),
+            cell_name=CellType(cell_name),
+            subsample=SampleId(subsample),
+            matrix_file_accession=cast(
+                AccessionId | None, row.get("matrix_file_accession", None)
+            ),
+            fragments_file_accession=cast(
+                AccessionId | None, row.get("fragments_file_accession", None)
+            ),
+        )
 
 
 PseudobulkTrackerRow = TypedDict(
@@ -76,3 +128,25 @@ PseudobulkTrackerRow = TypedDict(
         "uniform pipeline status": str,
     },
 )
+
+
+class GeneInfoRow(TypedDict):
+    gene_id: str
+    gene_name: str
+    mt: bool
+    ribo: bool
+
+
+class TssRow(TypedDict):
+    gene: str
+    transcript: str
+    chro: str
+    TSS: int
+    strand: Literal["+", "-"]
+
+
+class HasAnnotations(Protocol):
+    __annotations__: Mapping[str, object]
+
+
+class FromTypedDict(Mapping, HasAnnotations): ...
