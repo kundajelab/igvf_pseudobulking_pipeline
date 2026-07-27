@@ -3,11 +3,10 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import contextmanager
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from logging import Logger
-from threading import Lock
 from pathlib import Path
+from threading import Lock
 from types import MappingProxyType
 from typing import (
     Callable,
@@ -23,6 +22,7 @@ import pandas as pd
 import scipy.sparse
 
 from pseudobulk.barcode_qc import BarcodeQc
+from pseudobulk.tss import update_insertions_range
 from pseudobulk.types import (
     COUNTS_ARRAY,
     COUNTS_MATRIX,
@@ -32,8 +32,6 @@ from pseudobulk.types import (
     Contig,
     PseudobulkName,
 )
-from pseudobulk.tss import update_insertions_range
-
 
 ATAC_QC_COLUMNS: Final[tuple[str, ...]] = tuple(BarcodeQc.header_columns())
 """Expected columns in ATAC QC files."""

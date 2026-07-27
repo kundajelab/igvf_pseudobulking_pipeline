@@ -39,7 +39,7 @@ done
 
 metadata_file="$1"
 if [[ -z "$principal_analysis" ]]; then    
-    principal_analysis=$(uv run --project igvf_portal igvf-portal infer-principal-analysis "$metadata_file")
+    principal_analysis=$(pixi run --manifest-path igvf_portal igvf-portal infer-principal-analysis "$metadata_file")
 fi
 
 

@@ -3,12 +3,10 @@ from collections.abc import Iterable
 import numpy as np
 import pytest
 
-from pseudobulk.types import COUNTS_DTYPE
-from pseudobulk.types import COUNTS_ARRAY
-from pseudobulk.types import POS_DTYPE
 from pseudobulk.tss import bisect_left as bisect_left_cython
 from pseudobulk.tss import bisect_right as bisect_right_cython
 from pseudobulk.tss import update_tss_insertions as update_tss_insertions_cython
+from pseudobulk.types import COUNTS_ARRAY, COUNTS_DTYPE, POS_DTYPE
 
 
 def bisect_left(arr: Iterable[int], val: int) -> int:

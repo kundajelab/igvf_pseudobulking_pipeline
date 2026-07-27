@@ -67,3 +67,11 @@ class OutputCategory(Enum):
     """File that pertains to an intermediate analysis set."""
     PSEUDOBULK = "pseudobulk"
     """File that pertains to an individual pseudobulk set."""
+
+
+class PseudobulkUploadStatus(Enum):
+    """Enum to describe current status of an AnalysisSet's pseudobulks."""
+
+    UNATTEMPTED = "unattempted"
+    COMPLETE = "complete"
+    NEEDS_FIX = "needs-fix"

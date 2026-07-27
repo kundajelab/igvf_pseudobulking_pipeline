@@ -1,16 +1,50 @@
+import csv
+import gzip
+import logging
+import os
+import sys
 from collections.abc import (
     Collection,
+    Generator,
     Iterator,
 )
-import csv
-from io import TextIOWrapper
-from typing import (
-    Generator,
-    TextIO,
-)
-from pathlib import Path
 from contextlib import contextmanager
-import gzip
+from io import TextIOWrapper
+from pathlib import Path
+from typing import TextIO
+
+
+def setup_logger(logger: logging.Logger, level: int = logging.INFO) -> None:
+    logger.handlers.clear()
+    logger.setLevel(level)
+    ch = logging.StreamHandler(stream=sys.stderr)
+    f_formatter = logging.Formatter(
+        "%(asctime)s %(name)s %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    ch.setLevel(level)
+    ch.setFormatter(f_formatter)
+    logger.addHandler(ch)
+
+
+def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+    logger = logging.getLogger(name)
+    setup_logger(logger, level)
+    return logger
+
+
+def get_logger_from_file(file_name: str, level: int = logging.INFO) -> logging.Logger:
+    _, package_name, _, tool_name = file_name.split(".", 1)[0].rsplit("/", 3)
+    logger = logging.getLogger(
+        f"{package_name.replace('_', '-')} {tool_name.replace('_', '-')}"
+    )
+    setup_logger(logger, level)
+    return logger
+
+
+def check_access_keys():
+    if "IGVF_API_KEY" not in os.environ or "IGVF_SECRET_KEY" not in os.environ:
+        raise ValueError("IGVF_API_KEY and IGVF_SECRET_KEY must be set in environment")
 
 
 @contextmanager
@@ -46,8 +80,7 @@ def iter_csv_rows(
                 raise ValueError(
                     f"{csv_path} is missing required columns: {','.join(missing)}"
                 )
-        for row in reader:
-            yield row
+        yield from reader
 
 
 def iter_pseudobulk_dirs(pseudobulk_dir: Path) -> Iterator[Path]:

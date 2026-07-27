@@ -7,10 +7,7 @@ authors = [
     { name = "Ted Brookings", email = "ted.brookings@googlemail.com" }
 ]
 requires-python = ">=3.14.6"
-dependencies = [
-    "defopt>=7.0.0",
-    "igvf-utils",
-]
+dependencies = ["defopt>=7.0.0,<8"]
 
 [project.scripts]
 igvf-portal = "igvf_portal:main"
@@ -19,11 +16,32 @@ igvf-portal = "igvf_portal:main"
 requires = ["uv_build>=0.11.15,<0.12.0"]
 build-backend = "uv_build"
 
-[tool.uv.sources]
-igvf-utils = { git = "https://github.com/IGVF-DACC/igvf_utils.git" }
+[tool.pixi.workspace]
+channels = ["conda-forge", "bioconda", "nodefaults"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "linux-aarch64"]
 
-[tool.poe.tasks]
-lint = "ruff check --fix src/igvf_portal"
-format = "ruff format src/igvf_portal"
-types = "ty check src/igvf_portal"
-checks = ["lint", "format", "types"]
+[tool.pixi.pypi-dependencies]
+igvf-portal = { path = ".", editable = true }
+igvf-utils = { git = "https://github.com/IGVF-DACC/igvf_utils.git" }
+igvf-client = { git = "https://github.com/IGVF-DACC/igvf-python-client.git" }
+gspread = "==6.2.1"
+
+[tool.pixi.tasks]
+lint = "ruff check --select I --fix ."
+format = "ruff format ."
+types = "ty check ."
+checks = {depends-on = ["lint", "format", "types"]}
+
+[tool.pixi.dependencies]
+python = "3.14.6.*"
+aria2 = { version = "1.37.0.*", channel = "conda-forge" }
+
+[tool.pixi.feature.dev.dependencies]
+ty = { version = "0.0.60.*", channel = "conda-forge" }
+ruff = { version = "0.15.22.*", channel = "conda-forge" }
+
+[tool.pixi.environments]
+default = { features = ["dev"], solve-group = "default" }
+
+[tool.ty.environment]
+python = ".pixi/envs/default/bin/python3"

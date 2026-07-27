@@ -1,40 +1,39 @@
+import csv
+import dataclasses
+import gzip
+import itertools
+import logging
+import random
+import time
 from collections import deque
 from contextlib import ExitStack
 from io import BufferedReader
 from pathlib import Path
 from threading import (
-    local,
     Lock,
     Thread,
+    local,
 )
 from typing import (
     BinaryIO,
     TextIO,
 )
-import csv
-import dataclasses
-import itertools
-import logging
-import psutil
-import random
-import time
 
-import gzip
 import numpy as np
 import pandas as pd
+import psutil
 import scipy.sparse
 
-from pseudobulk.utils import create_and_write
-from pseudobulk.fragment import Fragment
-from pseudobulk.barcode_qc import BarcodeQc
-
 from pseudobulk import utils
+from pseudobulk.barcode_qc import BarcodeQc
+from pseudobulk.fragment import Fragment
 from pseudobulk.types import (
+    POS_ARRAY,
     Barcode,
     Contig,
-    POS_ARRAY,
     PseudobulkName,
 )
+from pseudobulk.utils import create_and_write
 
 
 @dataclasses.dataclass

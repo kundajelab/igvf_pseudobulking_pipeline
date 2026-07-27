@@ -1,3 +1,4 @@
+from imaplib import IMAP4_stream, IMAP4_SSL
 import dataclasses
 import logging
 from collections.abc import (
@@ -604,10 +605,16 @@ def scan_csv(
 
 def _is_csv_or_tsv(path: Path) -> bool:
     """Check if the file is a CSV or TSV file."""
-    return path.is_file() and path.suffix in [".csv", ".tsv", ".csv.gz", ".tsv.gz"]
+    if not path.is_file():
+        return False
+    match path.suffixes:
+        case [_, ".tsv"] | [_, ".csv"] | [_, ".tsv", ".gz"] | [_, ".csv", ".gz"]:
+            return True
+        case _:
+            return False
 
 
-def _find_qc_files(input_paths: list[Path], filter_glob: str = "*") -> Iterator[Path]:
+def _find_qc_files(input_paths: Iterable[Path], filter_glob: str = "*") -> Iterator[Path]:
     """Yield paths of CSV/TSV files matching the filter glob from the input paths."""
     for input_path in input_paths:
         if input_path.is_file():
@@ -804,9 +811,9 @@ def _add_figure(
 
 
 def _find_input_qc_files(
-    table_qc: list[Path],
-    accession_qc: list[Path],
-    pseudobulk_qc: list[Path],
+    table_qc: Iterable[Path],
+    accession_qc: Iterable[Path],
+    pseudobulk_qc: Iterable[Path],
     logger: logging.Logger,
 ) -> tuple[list[Path], list[Path], list[Path]]:
     """Find the paths to all the CSV/TSVs that will be visualized."""
@@ -818,14 +825,14 @@ def _find_input_qc_files(
         logger.info(f"  {file}")
 
     accession_qc_files: list[Path] = list(
-        _find_qc_files(input_paths=accession_qc, filter_glob="*per_cell_qc.tsv")
+        _find_qc_files(input_paths=accession_qc, filter_glob="*per_cell_qc.tsv.gz")
     )
     logger.info(f"Found {len(accession_qc_files)} accession QC files:")
     for file in accession_qc_files:
         logger.info(f"  {file}")
 
     pseudobulk_qc_files: list[Path] = list(
-        _find_qc_files(input_paths=pseudobulk_qc, filter_glob="*per_cell_qc.tsv")
+        _find_qc_files(input_paths=pseudobulk_qc, filter_glob="*per_cell_qc.tsv.gz")
     )
     logger.info(f"Found {len(pseudobulk_qc_files)} pseudobulk QC files:")
     for file in pseudobulk_qc_files:
@@ -844,10 +851,10 @@ class LogLevel(Enum):
 def visualize_qc(
     *,
     output: Path,
-    table_qc: list[Path] = [],
-    accession_qc: list[Path] = [],
-    pseudobulk_qc: list[Path] = [],
-    exclude_col: list[str] = ["analysis_set_accession", "pseudobulk_id", "subsample"],
+    table_qc: Iterable[Path] = (),
+    accession_qc: Iterable[Path] = (),
+    pseudobulk_qc: Iterable[Path] = (),
+    exclude_col: Iterable[str] = ("analysis_set_accession", "pseudobulk_id", "subsample"),
     index_col: str = "barcode_sample",
     max_outliers: int = 5,
     max_cols_per_row: int = 6,
@@ -975,7 +982,7 @@ def visualize_qc(
                 input_qc_file,
                 exclude_cols=exclude_cols,
                 index_col=index_col,
-                title=input_qc_file.parent.name,
+                title=input_qc_file.name.split(".", 1)[0],
                 logger=logger,
                 schema=PSEUDOBULK_QC_SCHEMA,
                 max_outliers=max_outliers,

@@ -40,6 +40,7 @@ lock="${yaml%.yaml}.lock"
 toml="${yaml%.yaml}.toml"
 temp_dir="$(mktemp -d -p "$(dirname "$yaml")")"
 trap 'rm -rf "$temp_dir"' EXIT
+cp  "$repo_dir/dockers/.dockerignore" "$temp_dir/"
 cp "$yaml" "$temp_dir/"
 if [[ -f "$lock" ]]; then
     # lock already exists. Use existing lock for faster update

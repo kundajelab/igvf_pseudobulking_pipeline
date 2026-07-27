@@ -3,7 +3,9 @@ __pycache__/
 .nextflow*
 .venv/
 
-.vscode
+.vscode/
+.zed/
+.claude/
 workspace/
 .ruff_cache/
 .DS_Store

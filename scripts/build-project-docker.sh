@@ -28,6 +28,9 @@ registry="${3:-kundajelab}"
 
 script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 repo_dir=$(dirname "$script_dir")
+trap 'rm -f "$repo_dir/$project/.dockerignore"' EXIT
+cp "$repo_dir/dockers/.dockerignore" "$project"
+
 pushd "$project" &> /dev/null
 if [[ -f "$repo_dir/$project/pixi.lock" ]]; then
     project_type="pixi"
@@ -38,7 +41,6 @@ else
     pixi run uv sync
 fi
 dockerfile="$repo_dir/dockers/${project_type}-project.Dockerfile"
-
 
 local_tag="${project}:${tag}"
 remote_tag="${registry}/${local_tag}"
@@ -60,4 +62,3 @@ fi
 # output name for dotenv environment file
 environment_name=$(tr '[:lower:]' '[:upper:]' <<< "$project")
 echo "${environment_name}_IMAGE=${remote_tag}"
-
