@@ -168,8 +168,8 @@ workflow {
     tss_tsv = genome_data_dir.map { dir -> file("${dir}/tss.tsv") }
 
     // Point to some needed resource files
-    peaks_auto_sql = file("assets/peaks.as")
-    fragments_auto_sql = file("assets/fragments.as")
+    peaks_auto_sql = file("${workflow.projectDir}/assets/peaks.as")
+    fragments_auto_sql = file("${workflow.projectDir}/assets/fragments.as")
 
     // Count the unique barcodes in each fragments file, so that SPLIT_FRAGMENTS can request memory
     // proportional to the number of barcodes it has to keep QC data for
@@ -235,14 +235,14 @@ workflow {
     // NOTE: collect emits *nothing* for an empty channel, so if there were no fragments files (and
     // hence SPLIT_FRAGMENTS never ran) SUMMARIZE_PSEUDOBULK_QC would never be called. Use ifEmpty to
     // supply an empty list in that case, so the RNA-only QC is still summarized.
-    atac_qc_files = SPLIT_FRAGMENTS.out.atac_qc_files.collect(sort: true, flat: true)
-    SUMMARIZE_PSEUDOBULK_QC(summarize_qc_in_ch, atac_qc_files.ifEmpty([]), metadata_file)
+    atac_qc_files = SPLIT_FRAGMENTS.out.atac_qc_files.collect(sort: true, flat: true).ifEmpty([])
+    SUMMARIZE_PSEUDOBULK_QC(summarize_qc_in_ch, atac_qc_files, metadata_file)
     // concatenate all the per-pseudobulk summary QCs and publish, keeping only the first header
     COLLECT_PSEUDOBULK_QC(SUMMARIZE_PSEUDOBULK_QC.out.qc_summary_out.collect())
 
     // create combined QC per accession
-    rna_qc_files = PSEUDOBULK_RNA.out.all_cell_rna_qc_reports.collect(sort: true, flat: true)
-    COMBINE_ACCESSION_QC(atac_qc_files.ifEmpty([]), rna_qc_files.ifEmpty([]), metadata_file)
+    rna_qc_files = PSEUDOBULK_RNA.out.all_cell_rna_qc_reports.collect(sort: true, flat: true).ifEmpty([])
+    COMBINE_ACCESSION_QC(atac_qc_files, rna_qc_files, metadata_file)
 
     // NOTE: ifEmpty is needed on these counts because collect emits nothing at all when there were
     // no files of the corresponding type, which would stop WRITE_SUMMARY from ever being called.

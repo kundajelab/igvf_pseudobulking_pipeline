@@ -76,12 +76,8 @@ if [[ -z "$job_id" ]]; then
 fi
 
 # the label in the log name is only known to submit-pipeline.sh, so match on the job id
-log_files=("$log_dir"/igvf-pseudobulk-*-"$job_id".out)
-log_file=""
-if [[ -e "${log_files[0]}" ]]; then
-    # NOTE: negative array indices need bash 4.3, and the login nodes have 4.2
-    log_file="${log_files[$(( ${#log_files[@]} - 1 ))]}"
-fi
+job_name=$(sacct -j "$job_id" --format=JobName%100 -n | awk 'NR==1{$1=$1;print}')
+log_file="$log_dir/$job_name/$job_id.out"
 
 # NOTE: for a job that has left the queue, squeue prints "slurm_load_jobs error: Invalid job id
 # specified" on stdout and still exits 0, so neither redirecting stderr nor checking the exit status

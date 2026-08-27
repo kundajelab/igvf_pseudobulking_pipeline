@@ -12,7 +12,7 @@ def download_file(
     *,
     igvf_mode: IgvfMode = IgvfMode.prod,
     output: Path | None = None,
-    chunk_size: int = 8192,
+    chunk_size: int = 2**20,
 ) -> None:
     """Infer the principal analysis accession IDs from the input metadata file. Display to stdout
 

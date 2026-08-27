@@ -7,6 +7,9 @@ process IGVF_UPLOAD {
     memory '4 GB'
     conda "environments/IGVF_PORTAL.yaml"
     container "${dotenv('IGVF_PORTAL_IMAGE')}"
+    // A real upload should not be preempted part-way through, so send it to a queue that does not
+    // preempt; a dry run only checks schema compliance and can take the usual queue.
+    queue { dry_run ? params.slurm_queue : params.non_preemptable_queue }
     publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/",
         pattern: "${upload_script}",
         mode: params.publish_mode

@@ -6,6 +6,11 @@ ARG ENV_NAME
 FROM ghcr.io/astral-sh/uv@sha256:89cd2e5a90768838f1a7d26d95e43e3c1d5bbb4861fb54ad0974db3b5360b686 AS build
 ARG ENV_NAME
 
+# create hack version of date to fix nextflow bug https://github.com/nextflow-io/nextflow/issues/7114
+RUN echo '#!/usr/bin/env bash' > /usr/local/bin/date && \
+    echo 'if [ "$1" = "+%s%3N" ]; then /usr/bin/date +%s%N | cut -c1-13 ; else /usr/bin/date "$@" ; fi' >> /usr/local/bin/date && \
+    chmod a+x /usr/local/bin/date
+
 # Install the project into the ENV_NAME
 WORKDIR "/opt/$ENV_NAME"
 
@@ -40,11 +45,6 @@ RUN echo 'exec "$@"' >> /opt/shell-hook.sh
 RUN PYTHON_LOC=$(readlink -f "/opt/$ENV_NAME/.venv/bin/python" | sed 's,^/root/.local,/opt/local,') && \
     ln -sf "$PYTHON_LOC" "/opt/$ENV_NAME/.venv/bin/python"
 
-# create hack version of date to fix nextflow bug https://github.com/nextflow-io/nextflow/issues/7114
-RUN echo '#!/usr/bin/env bash' > /usr/local/bin/date && \
-    echo 'if [ "$1" = "+%s%3N" ]; then /usr/bin/date +%s%N | cut -c1-13 ; else /usr/bin/date "$@" ; fi' >> /usr/local/bin/date && \
-    chmod a+x /usr/local/bin/date
-
 # ubuntu 26.04
 # https://hub.docker.com/layers/library/ubuntu/26.04/images/sha256-37a0633b900e99d0937986022b4b4018908e1361704425313cc1c348bebd7230
 FROM ubuntu@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS production
@@ -55,26 +55,27 @@ WORKDIR "/opt/$ENV_NAME"
 RUN groupadd --system --gid 999 nonroot \
     && useradd --system --gid 999 --uid 999 --create-home nonroot
 
-# Copy whole env into the production image. We're doing science so debug-ability is more important
-# than maximum hardening
-COPY --from=build --chown=nonroot:nonroot "/opt/$ENV_NAME" "/opt/$ENV_NAME"
-# Copy shell-hook so that the environment can auto-activate
-COPY --from=build --chown=nonroot:nonroot /opt/shell-hook.sh /opt/shell-hook.sh
-# Copy the python environment, to /opt/local
-COPY --from=build --chown=nonroot:nonroot /root/.local /opt/local
-# copy temporary fix to bug with nextflow date on rust coreutils
-COPY --from=build /usr/local/bin/date /usr/local/bin/date
+# use the nonroot user
+USER nonroot
 
+# for apptainer, need to update path
+ENV PATH="/opt/$ENV_NAME/.venv/bin:$PATH"
 
 # env variables for packages that want to write to / or /root by default:
 ENV NUMBA_CACHE_DIR=/tmp/numba
 ENV MPLCONFIGDIR=/tmp/matplotlib
 
-# use the nonroot user
-USER nonroot
+# copy temporary fix to bug with nextflow date on rust coreutils
+COPY --from=build /usr/local/bin/date /usr/local/bin/date
+# Copy shell-hook so that the environment can auto-activate
+COPY --from=build --chown=nonroot:nonroot /opt/shell-hook.sh /opt/shell-hook.sh
 
 # set the entrypoint to the shell-hook script (activate the environment and run the command)
 ENTRYPOINT ["/bin/bash", "/opt/shell-hook.sh"]
 
-# for apptainer, need to update path
-ENV PATH="/opt/$ENV_NAME/.venv/bin:$PATH"
+# Copy the python environment, to /opt/local
+COPY --from=build --chown=nonroot:nonroot /root/.local /opt/local
+
+# Copy whole env into the production image. We're doing science so debug-ability is more important
+# than maximum hardening
+COPY --from=build --chown=nonroot:nonroot "/opt/$ENV_NAME" "/opt/$ENV_NAME"

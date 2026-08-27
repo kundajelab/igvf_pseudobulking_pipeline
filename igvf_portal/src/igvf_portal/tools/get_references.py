@@ -133,7 +133,7 @@ def get_references(
     *,
     igvf_mode: IgvfMode = IgvfMode.prod,
     output: Path | None = None,
-    chunk_size: int = 8192,
+    chunk_size: int = 2**20,
     gene_info_name: str = "gene_info.csv",
     tss_name: str = "tss.tsv",
 ) -> None:

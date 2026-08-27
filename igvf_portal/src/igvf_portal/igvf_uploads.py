@@ -77,29 +77,27 @@ class IgvfUploadBase(abc.ABC):
             # we can only use one file_set, so just pick the first (if there is more than one, it's just aliases anyway)
             return self._lookup_input_file_sets_alias(config)[0]
 
-    def _get_aliases(
+    def _get_file_alias(
         self,
         upload_path: Path,
         config: GenUploadConfig,
         file_set_alias: Alias | None = None,
-    ) -> list[Alias]:
+    ) -> Alias:
         """Return an alias for this data set."""
         if file_set_alias is None:
             file_set_alias = self._get_fileset_alias(
                 upload_path=upload_path, config=config
             )
         suffix = upload_path.name.replace(".", "_")
-        aliases = [
-            Alias(f"{file_set_alias}-{suffix}") for file_set_alias in file_set_alias
-        ]
+        alias = Alias(f"{file_set_alias}-{suffix}")
         match self.analysis_step:
             case AnalysisStep.PSEUDOBULK_ATAC_SEQ:
-                config.step_1_aliases[file_set_alias].extend(aliases)
+                config.step_1_aliases[file_set_alias].append(alias)
             case AnalysisStep.PSEUDOBULK_RNA_SEQ:
-                config.step_2_aliases[file_set_alias].extend(aliases)
+                config.step_2_aliases[file_set_alias].append(alias)
             case AnalysisStep.PEAK_CALLING:
-                config.step_3_aliases[file_set_alias].extend(aliases)
-        return aliases
+                config.step_3_aliases[file_set_alias].append(alias)
+        return alias
 
     def derived_from(
         self, config: GenUploadConfig, file_set_alias: Alias
@@ -130,7 +128,7 @@ class IgvfFile(IgvfUploadBase):
         if upload_path is None:
             return None
         file_set_alias = self._get_fileset_alias(upload_path=check_path, config=config)
-        file_aliases = self._get_aliases(
+        file_alias = self._get_file_alias(
             upload_path=upload_path, config=config, file_set_alias=file_set_alias
         )
 
@@ -138,9 +136,10 @@ class IgvfFile(IgvfUploadBase):
             return ",".join(set(_aliases))
 
         row: UploadRow = {
-            "aliases": _join_aliases(file_aliases),
+            "aliases": file_alias,
             "award": config.award,
             "lab": config.lab,
+            "derived_manually": False,
             "file_set": file_set_alias,
             "file_format": self.file_format,
             "content_type": self.content_type,
@@ -217,11 +216,11 @@ class IgvfDocument(IgvfUploadBase):
         upload_path = self.get_path(check_path) if check_path.is_dir() else check_path
         if upload_path is None:
             return None
-        file_aliases = self._get_aliases(upload_path=upload_path, config=config)
-        doc_aliases.extend(file_aliases)
+        file_alias = self._get_file_alias(upload_path=upload_path, config=config)
+        doc_aliases.append(file_alias)
         cell_type, sample_id = config.parse_pseudobulk_folder(check_path)
         return {
-            "aliases": ",".join(set(file_aliases)),
+            "aliases": file_alias,
             "award": config.award,
             "lab": config.lab,
             "document_type": self.document_type,
@@ -294,6 +293,7 @@ class IgvfPseudobulk(IgvfUploadBase):
             "samples": annotations["subsample"],
             "input_file_sets": ",".join(sorted(input_file_sets)),
             "documents": ",".join(sorted(doc_aliases)),
+            "merged": False,
         }
         if cell_qualifier is not None:
             row["cell_qualifier"] = cell_qualifier

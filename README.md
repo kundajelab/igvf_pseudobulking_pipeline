@@ -51,8 +51,8 @@ On an HPC cluster like `sherlock`, you may need to launch a compute node (e.g. v
 install. On the login nodes, sometimes the install fails due to not enough available file
 descriptors.
 
-In the following commands, you can avoid the need for starting commands with  `pixi run` by
-activating the environment:
+In the following commands, you can avoid the need for starting non-task commands with  `pixi run`
+by activating the environment:
 ```bash
 eval $(pixi shell-hook)
 ```
@@ -63,6 +63,10 @@ Save your secrets securely to be used by nextflow
 pixi run nextflow secrets set IGVF_API_KEY [YOUR_ACCESS_KEY]
 pixi run nextflow secrets set IGVF_SECRET_KEY [YOUR_SECRET_KEY]
 ```
+Alternatively if IGVF_API_KEY and IGVF_SECRET_KEY are set in your shell environment, you can run
+```bash
+pixi run import-secrets
+```
 
 ## Usage
 
@@ -70,21 +74,26 @@ More most use-cases, you can run the IGVF pseudobulking pipeline by opening a te
 igvf_pseudobulking_pipeline project folder and running:
 
 ```bash
-pixi run pipeline PATH_TO_PSEUDOBULKING_METDATA_TSV
+pixi run pipeline "$METADATA_ACCESSION"
 ```
+Where `METADATA_ACCESSION` is the accession ID of the annotations TSV specifying how pseudobulks
+are to be performed.
 
 This will rapidly download all needed files in parallel and run the pipeline locally. You can also
-override the defaults for queue, profile, and output folder if needed (see the `pipeline` task in
-[pixi.toml](./pixi.toml)). e.g. to run in the owners queue and change the output folder:
+override the defaults for queue, profile, and output folder if needed (see the script
+[run-pipeline.sh](./scripts/run-pipeline.sh) which is called by the `pipeline` task.). e.g. to run
+in the owners queue and change the base output folder:
 ```bash
-pixi run pipeline PATH_TO_PSEUDOBULKING_METDATA_TSV owners slurm,apptainer "$HOME/my/output/folder"
+pixi run pipeline \
+    --queue owners \
+    --profile slurm,apptainer \
+    --workspace "$HOME/my/output/folder" \
+    "$METADATA_ACCESSION"
 ```
-Or if even more customizability is needed, you can launch nextflow directly without a helper task:
-```bash
-pixi run nextflow . --metadata_file [OTHER_ARGS]
-```
+Any arguments after `METADATA_ACCESSION` will be passed directly to nextflow.
 To see the complete list of overrideable parameters, see [nextflow.config](./nextflow.config) (_params_ section).
-Although this way you will at a minimum need to manually specify the profile and output folders.
+All logs, intermediates, and final output files are saved in `WORKSPACE_FOLDER`/`ANALYSIS_ACCESSION` where
+`ANALYSIS_ACCESSION` is the accession ID for the principal analysis containing the annotations TSV.
 
 You can find a report with details of execution duration, resource usage, etc from the latest run by
 running
@@ -93,15 +102,21 @@ pixi run get-latest-report
 ```
 It will display an HTML file that can be opened in any web browser.
 
-Once you are done, you can delete all the output and temporary files created by the pipeline by
-running
+Once you are done, you can delete all the intermediate and temporary files created by the pipeline
+(leaving the final outputs) by running
 ```bash
-pixi run clear
+pixi run clear "$ANALYSIS_ACCESSION"
 ```
+or
+```bash
+pixi run clear all
+```
+to clear _every_ pipeline run.
 
 ## Outputs
-Once the pipeline is done running, you will find the following directories inside your `workspace`:
-
+Once the pipeline is done running, you will find the following directories inside your
+`WORKSPACE`/`ANALYSIS_ACCESSION` folder:
+- `$METADATA_ACCESSION.tsv.gz` - the downloaded annotations TSV.
 - `raw_fragments/` — this directory will contain one fragments file named
   `${ANALYSIS_ACCESSION}.tsv.gz` per IGVF analysis accession will be inside it
 - `raw_rna/` - this directory will contain one AnnData RNA count matrix named
@@ -113,11 +128,14 @@ Once the pipeline is done running, you will find the following directories insid
   within this folder.
 - `output/` - this directory contains final output files of the pseudobulking pipeline.
   -  `pseudobulks/` — this directory will contain one subdirectory per pseudobulk. These will be
-     named `annotation_${annotation-index}-${subsample}`. Each pseudobulk subdirectory contains 7
-     files:
-      - `fragments.tsv.gz` — combined fragments from all cells in the pseudobulk.
+     named `${cell_name}-${subsample}` where `cell_name` and `subsample` have been edited to replace
+     spaces and commas by underscores (in a way that guarantees a 1-1 mapping). Each pseudobulk
+     subdirectory generally contains 9 files (some are missing if no ATAC-seq data is present):
+      - `fragments.tsv.gz` — bed3+ file with combined fragments from all cells in the pseudobulk.
+      - `fragments.bb` — BigBed file with identical content to fragments.tsv.gz.
       - `raw_insertions.bw` — pileup of +4/-4 shifted insertions from all fragments.
-      - `peaks.narrowPeak.gz` — TSV with peaks called on shifted insertions (reproducible peak calling with MACS3).
+      - `peaks.narrowPeak.gz` — bed6+ with peaks called on shifted insertions (reproducible peak calling with MACS3).
+      - `peaks.narrowPeak.bb` — BigBed file with identical content to peaks.narrowPeak.gz.
       - `peaks_minuslog10pval.bw` — -log10 p-value signal track produced by MACS3.
       - `rna_counts_mtx.h5ad` — RNA counts matrix subset to cells in the pseudobulk.
       - `pseudobulk_expression.tsv.gz` — pseudobulked expression values.
@@ -158,8 +176,9 @@ Once the pipeline is done running, you will find the following directories insid
     mean or median of the corresponding QC metrics from the individual cells in the pseudobulk.
     Rather, these QC metrics are computed when treating the cluster as a single pseudobulked entity.
     The columns in this file are:
-      - `directory_name` - the pseudobulk ID assigned by the pipeline
-      - `pseudobulk` - a name obtained by replacing annotation_${annotation_index} with the `cell_name`.
+      - `directory_name` - legacy column that is identical to `pseudobulk`
+      - `pseudobulk` - The pseudobulk ID assigned by the pipeline: `${cell_name}-${subsample}` with
+        spaces and commas replaced by underscores in a way that guarantees a 1-1 mapping.
       - `cell_name` - the value of `cell_name` as provided in the input annotations file.
       - `subsample` - the subsample.
       - `num_cells` - the number of cells in the pseudobulk
@@ -172,47 +191,10 @@ Once the pipeline is done running, you will find the following directories insid
       - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction of nucleosome-free fragments (1-147 bp)
       - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over the average number of shifted insertions at TSS flanks
       - `frip` - the fraction of fragments overlapping peaks (computed on the pseudobulk peaks)
-- `analysis_accession_qc_reports/` — this directory will contain one QC file per analysis accession
-  named `${analysis_accession}_per_cell_qc.tsv`. This QC file contains one row per barcode that
-  appeared in the analysis accession fragment file or RNA counts matrix. Not every barcode is
-  guaranteed to be a real annotated cell, however. The QC columns are:
-    - `analysis_accession` - the analysis accession the barcode came from
-    - `barcode` - the barcode
-    - `annotated` - whether or not this barcode was annotated; may NOT be true for all barcode in this file
-    - `found_in_rna` - whether or not this barcode was found in the RNA counts matrix
-    - `found_in_atac` - whether or not this barcode was found in the ATAC fragments file
-    - `rna_read_count` - the number of RNA reads
-    - `gene_count` - the number of unique genes
-    - `pct_mito` - the percent of reads from mitochrondrial genes
-    - `pct_ribo` - the percent of reads from ribosomal genes
-    - `num_frags` - the number of ATAC fragments
-    - `pct_duplicated_reads` - the percent of ATAC reads that are duplicates
-    - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction
-      of nucleosome-free fragments (1-147 bp)
-    - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over the average
-      number of shifted insertions at TSS flanks
-- `pseudobulk_qc.tsv` - this file contains per-pseudobulk QC metrics. The QC metrics are not the
-  mean or median of the corresponding QC metrics from the individual cells in the pseudobulk.
-  Rather, these QC metrics are computed when treating the cluster as a single pseudobulked entity.
-  The columns in this file are:
-    - `pseudobulk` - the name of the pseudobulk
-    - `annotation_level` - the annotation level (the column in the annotation file from which this pseudobulk was derived from)
-    - `annotation` - the annotation itself
-    - `subsample` - the subsample. **NOTE: THIS COLUMN WILL NOT BE PRESENT IF THE `--at_annotation_level` flag is used.**
-    - `num_cells` - the number of cells in the pseudobulk
-    - `rna_read_count` - the number of RNA reads
-    - `gene_count` - the number of unique genes
-    - `pct_mito` - the percent of reads from mitochrondrial genes
-    - `pct_ribo` - the percent of reads from ribosomal genes
-    - `num_frags` - the number of ATAC fragments
-    - `pct_duplicated_reads` - the percent of ATAC reads that are duplicates
-    - `nucleosomal_signal` - the fraction of mono-nucleosomal fragments (148-294 bp) to the fraction of nucleosome-free fragments (1-147 bp)
-    - `tss_enrichment` - the enrichment of shifted insertions near TSS centers over the average number of shifted insertions at TSS flanks
-    - `frip` - the fraction of fragments overlapping peaks (computed on the pseudobulk peaks)
 
 ## Annotation File Requirements
 
-Annotations are required to adhere to the [single cell cell annotation table file format specification template](https://data.igvf.org/documents/a5f7c1d4-64a7-40fb-be0e-4b7d5596df01/)
+Annotations are required to adhere to the [single cell cell annotation table file format specification template](https://data.igvf.org/documents/a029e2d1-270a-4289-bddf-4bb5699a167f/)
 
 ## Genome Data
 
@@ -223,6 +205,8 @@ For details on how these files were generated, see `genome_data/README.md`.
 
 ## Processing and calculation notes
 
+- The correct species is auto-determined by querying the IGVF Portal for metadata. This can be
+  overridden by specifying `params.species` for the nextflow pipeline.
 - Fragments that do not come from a chromosome in the species chromosome sizes file are
   **ignored entirely**. They will not even contribute towards the `num_frags` QC metric.
 - The `tss_enrichment` is computed per barcode via the following procedure:

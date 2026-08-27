@@ -34,11 +34,13 @@ class UploadRow(TypedDict):
     aliases: str
     award: str
     lab: str
+    derived_manually: NotRequired[bool]
     file_set: NotRequired[str]
     file_set_type: NotRequired[str]
     file_size: NotRequired[int]
     file_format: NotRequired[str]
     content_type: NotRequired[str]
+    merged: NotRequired[bool]
     md5sum: NotRequired[str]
     submitted_file_name: NotRequired[str]
     reference_files: NotRequired[str]

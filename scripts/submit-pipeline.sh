@@ -22,7 +22,7 @@ mode="prod"
 
 function usage {
     cat << EOF
-Usage: $0 [ARGS] metadata [nextflow-args]
+Usage: $(basename "$0") [ARGS] metadata [NEXTFLOW_ARGS]
 
 Submit the pipeline to SLURM as a batch job, so the nextflow head process runs on a compute node
 instead of a login node. Returns as soon as the job is queued.
@@ -78,8 +78,12 @@ while [[ "$#" -ge 1 ]]; do
             log_dir="$2"
             shift 2
             ;;
-        "-n" | "--dry-run")
-            dry_run=true
+        "--dry-run")
+            dry_run="true"
+            shift 1
+            ;;
+        "--no-dry-run")
+            dry_run="false"
             shift 1
             ;;
         "-p" | "--profile")
@@ -156,20 +160,21 @@ else
 fi
 
 run_args=("--profile" "$profile" "--workspace" "$workspace" "--queue" "$queue" "--principal-analysis" "$principal_analysis" "--mode" "$mode" "--" "$metadata" "${nextflow_args[*]}")
-
-mkdir -p "$log_dir"
-
 run_args_quoted=$(printf '%q ' "${run_args[@]}")
+
+job_name=igvf-pseudobulk/$principal_analysis
+log_folder="$log_dir/$job_name"
+mkdir -p "$log_folder"
 
 sbatch_script=$(cat << EOF
 #!/usr/bin/env bash
-#SBATCH --job-name=igvf-pseudobulk/$principal_analysis
-#SBATCH --output=$log_dir/igvf-pseudobulk-${principal_analysis}-%j.out
+#SBATCH --job-name=$job_name
+#SBATCH --output="$log_folder/%j.out"
 #SBATCH --partition=$partition
 #SBATCH --time=$time_limit
 #SBATCH --cpus-per-task=$cpus
 #SBATCH --mem=$mem
-#SBATCH --chdir=$repo_dir
+#SBATCH --chdir="$repo_dir"
 # Requeueing would silently restart the pipeline from scratch, so leave restarts to a manual
 # resubmission, which resumes.
 #SBATCH --no-requeue
@@ -195,7 +200,7 @@ pixi run pipeline $run_args_quoted
 EOF
 )
 
-if [[ "$dry_run" == true ]]; then
+if [[ "$dry_run" == "true" ]]; then
     echo "$sbatch_script"
     exit 0
 fi
@@ -205,6 +210,6 @@ job_id=$(printf '%s\n' "$sbatch_script" | sbatch --parsable)
 cat << EOF
 submitted nextflow head process as job $job_id
    partition: $partition   walltime: $time_limit   cpus: $cpus   mem: $mem
-   log:       $log_dir/igvf-pseudobulk-$principal_analysis-$job_id.out
+   log:       $log_folder/$job_id.out
    status:    scripts/status-pipeline.sh $job_id
 EOF

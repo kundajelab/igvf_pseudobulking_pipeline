@@ -86,7 +86,7 @@ trap 'rm -rf "$tmp_env"' EXIT
             ;;
         "yaml")
             1>&2 echo "Building docker for yaml project: $project:$tag"
-            "$script_dir/build-yaml-docker.sh" "${args[@]}" "$repo_dir/environments/$project" "$tag"
+            "$script_dir/build-yaml-docker.sh" "${args[@]}" "$project" "$tag"
             ;;
         *)
             1>&2 echo "Unknown project type: $type for project: $project"

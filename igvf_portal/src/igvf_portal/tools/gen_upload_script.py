@@ -67,3 +67,5 @@ def gen_upload_script(
     upload_state.get_uploads()
     # Write the upload TSVs and upload command script
     upload_state.write_upload_state()
+    # Check that required metadata is present in the IGVF Portal
+    upload_state.check_required_metadata()

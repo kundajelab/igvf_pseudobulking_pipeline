@@ -5,20 +5,22 @@ script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 repo_dir=$(dirname "$script_dir")
 pushd &> /dev/null "$repo_dir"
 
-queue="owners"
+queue="normal"
 profile="$(scripts/get-default-profile.sh)"
 workspace="$(scripts/get-default-workspace.sh)"
 mode="prod"
+time_limit="1-00:00:00"
+cpus=2
+mem="8G"
+log_dir="$HOME/logs"
 
 function usage {
     cat << EOF
-Usage: $0 [ARGS] -- [metadata] [nextflow_args]
+Usage: $0 [ARGS] -- [metadata]
 
-Run the pipeline with specified metadata.
-* If metadata is specified by alias or accession ID, download it and infer principal analysis accession if needed.
-* If metadata is specified by file path, accession must be specified.
-* If no metadata is specified, run small(ish) test set.
-* Any additional items after metadata are passed directly to nextflow
+For a pipeline that succeeded with --dry-run for uploads to the IGVF portal, actually perform the upload.
+Note: this uses scripts/run-in-container.sh which currently only works with apptainer, so it must be run
+on sherlock.
 
 ARGS:
     -h|--help: Show this message and exit.
@@ -81,23 +83,13 @@ done
 
 pushd "$repo_dir" &> /dev/null
 
-metadata="${1:-"$repo_dir/test_metadata.tsv"}"
-if [[ "$#" -ge 1 ]]; then
-    shift 1
-fi
-nextflow_args="${*}"
+metadata="$1"
 if [[ "$metadata" =~ \.tsv(\.gz)?$ ]]; then
     metadata_file="$metadata"
     # ensure we have the principal analysis accession
     if [[ -z "$principal_analysis" ]]; then
-        if [[ "$metadata_file" =~ test_metadata\.tsv$ ]]; then
-            principal_analysis=IGVFDS5417HJRJ,IGVFDS6430MYNQ
-            run_folder="$workspace/${principal_analysis//,/-}"
-            mkdir -p "$run_folder"
-        else
-            1>&2 echo "Must specify metadata accession, or metadata file and principal analysis accession"
-            exit 1
-        fi
+        1>&2 echo "Must specify metadata accession, or metadata file and principal analysis accession"
+        exit 1
     fi
 else
     # ensure we have the principal analysis accession
@@ -117,19 +109,44 @@ else
     run_folder="$workspace/${principal_analysis//,/-}"
     # download the metadata file if it isn't already present
     metadata_file="$run_folder/${metadata}.tsv.gz"
-    if [[ ! -f "$metadata_file" ]]; then
-        pixi run --manifest-path igvf_portal igvf-portal download-file "$metadata" --output "$metadata_file" --igvf-mode "$mode"
-    fi
+
+fi
+if [[ ! -f "$metadata_file" ]]; then
+    1>&2 echo "Unable to find metadata file '$metadata_file'."
+    exit 1
 fi
 
-# move to the output folder for this workflow so that nextflow logs and folder are stored there
-pushd "$run_folder" &> /dev/null
+output_folder="$run_folder/output"
+dry_run_upload_script="$output_folder/upload.sh"
+earnest_upload_script="$output_folder/upload-no-dry-run.sh"
+sed 's/^dry_run_arg=".*"$/dry_run_arg=""/' "$dry_run_upload_script" > "$earnest_upload_script"
 
-nextflow run "$repo_dir/main.nf" \
-    --metadata_file "$metadata_file" \
-    --principal_analysis "$principal_analysis" \
-    --workspace "$workspace" \
-    --slurm_queue "$queue" \
-    -profile "$profile" \
-    --igvf_mode "$mode" \
-    "${nextflow_args[@]}"
+# Need to run upload in a non-preemptible queue, not the login node
+job_name=igvf-upload/$principal_analysis
+log_folder="$log_dir/$job_name"
+mkdir -p "$log_folder"
+sbatch_script=$(cat << EOF
+#!/usr/bin/env bash
+#SBATCH --job-name=$job_name
+#SBATCH --output=$log_folder/%j.out
+#SBATCH --partition=$queue
+#SBATCH --time=$time_limit
+#SBATCH --cpus-per-task=$cpus
+#SBATCH --mem=$mem
+#SBATCH --chdir=$repo_dir
+set -euo pipefail
+
+echo "head process: job \$SLURM_JOB_ID on \$(hostname), partition \$SLURM_JOB_PARTITION"
+
+pixi run-in-container --project igvf_portal "$earnest_upload_script"
+EOF
+)
+
+job_id=$(printf '%s\n' "$sbatch_script" | sbatch --parsable)
+
+cat << EOF
+submitted nextflow head process as job $job_id
+   partition: $queue   walltime: $time_limit   cpus: $cpus   mem: $mem
+   log:       $log_folder/$job_id.out
+   status:    scripts/status-pipeline.sh $job_id
+EOF

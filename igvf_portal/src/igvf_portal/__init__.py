@@ -29,5 +29,5 @@ tools: list[Callable] = [
 
 
 def main() -> None:
-    utils.fix_igvf_logging(level=logging.WARNING)
+    utils.fix_igvf_logging(level=logging.INFO)
     defopt.run(tools)

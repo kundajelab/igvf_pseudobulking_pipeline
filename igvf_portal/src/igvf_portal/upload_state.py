@@ -8,7 +8,7 @@ from collections.abc import (
     Sequence,
 )
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 from igvf_portal.enums import (
     AnalysisStep,
@@ -24,6 +24,7 @@ from igvf_portal.igvf_uploads import (
     TabularFile,
 )
 from igvf_portal.types import (
+    AccessionId,
     Alias,
     UploadRow,
 )
@@ -159,6 +160,9 @@ class UploadState:
         )
     )
     submission_rows: list[str] = dataclasses.field(default_factory=list)
+    required_cell_ids: set[Alias] = dataclasses.field(default_factory=set)
+    required_sample_ids: set[Alias] = dataclasses.field(default_factory=set)
+    required_format_specs: set[Alias] = dataclasses.field(default_factory=set)
 
     def __post_init__(self):
         # Check for missing or extra pseudobulks
@@ -199,6 +203,10 @@ class UploadState:
                 check_path=check_path, config=self.config, doc_aliases=doc_aliases
             )
             if row is not None:
+                file_spec = row.get("file_format_specifications", None)
+                if file_spec is not None:
+                    self.required_format_specs.add(Alias(file_spec))
+
                 file_rows = self.analysis_step_file_upload_rows[analysis_step]
                 match file_def:
                     case TabularFile():
@@ -315,6 +323,12 @@ class UploadState:
                 for folder, doc_aliases in self.pseudobulk_folders_docs.items()
             ]
             self._write_tsv("pseudobulk_set", pseudobulk_rows, analysis_step=None)
+            # add metadata to check
+            for row in pseudobulk_rows:
+                self.required_cell_ids.add(Alias(row["cell_type"]))
+                self.required_sample_ids.update(
+                    cast(list[Alias], row["samples"].split(","))
+                )
         # then matrix, signal and tabular files in order of step number
         for (
             analysis_step,
@@ -351,3 +365,26 @@ class UploadState:
             f_out.writelines(f"{row.strip()}\n" for row in self.submission_rows)
         out.chmod(out.stat().st_mode | stat.S_IEXEC)
         self.config.logger.info(f"Wrote submission script to {out}")
+
+    def _check_required_id(
+        self, metadata_id: Alias | AccessionId, description: str
+    ) -> int:
+        try:
+            self.config.lookup_record(metadata_id)
+            return 0
+        except ValueError as value_error:
+            self.config.logger.error(
+                f"Checking {description} {metadata_id}: {value_error}"
+            )
+            return 1
+
+    def check_required_metadata(self) -> None:
+        num_errors = 0
+        for cell_id in self.required_cell_ids:
+            num_errors += self._check_required_id(cell_id, "cell ID")
+        for sample_id in self.required_sample_ids:
+            num_errors += self._check_required_id(sample_id, "sample ID")
+        for format_spec in self.required_format_specs:
+            num_errors += self._check_required_id(format_spec, "file format spec")
+        if num_errors > 0:
+            raise ValueError(f"Missing {num_errors} required metadata elements.")

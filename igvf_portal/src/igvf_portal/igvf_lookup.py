@@ -34,7 +34,7 @@ class IgvfLookup:
         """Lookup record, using table of previous lookups if it's present, otherwise adding to table."""
         record = self.record_lookups.get(key, None)
         if record is None:
-            record = self.connection.get(rec_ids=key, ignore404=False)
+            record = self.connection.get(rec_ids=key, ignore404=True)
             if record is None:
                 raise ValueError(f"Could not find record for '{key}'")
             self.record_lookups[key] = record

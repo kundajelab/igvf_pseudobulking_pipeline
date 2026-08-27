@@ -1,5 +1,4 @@
 import dataclasses
-import hashlib
 from collections import defaultdict
 from collections.abc import (
     Iterator,
@@ -46,6 +45,9 @@ class GenUploadConfig:
     metadata_path: Path | None = None
     annotations_path: Path | None = None
     logger: Logger
+    _content_accessions: dict[tuple[AccessionId, ContentType], set[AccessionId]] = (
+        dataclasses.field(default_factory=dict)
+    )
     step_1_aliases: defaultdict[Alias, list[Alias]] = dataclasses.field(
         default_factory=lambda: defaultdict(list)
     )
@@ -56,11 +58,13 @@ class GenUploadConfig:
         default_factory=lambda: defaultdict(list)
     )
 
+    def lookup_record(self, key: Alias | AccessionId) -> IgvfRecord:
+        """Convenience method to lookup record within GenUploadConfig."""
+        return self.igvf_lookup.lookup_record(key)
+
     def _lookup_analysis_step_version(self, analysis_step: AnalysisStep) -> list[Alias]:
         """Get aliases for the requested AnalysisStepVersion."""
-        step_record = cast(
-            dict[str, object], self.igvf_lookup.lookup_record(analysis_step.value)
-        )
+        step_record = cast(dict[str, object], self.lookup_record(analysis_step.value))
         for version_dict in cast(
             list[dict[str, object]], step_record["analysis_step_versions"]
         ):
@@ -72,7 +76,7 @@ class GenUploadConfig:
                     == f"igvf_pseudobulking_pipeline-v{VERSION}"
                 ):
                     version_id = cast(Alias, version_dict["@id"])
-                    return self.igvf_lookup.lookup_record(version_id)["aliases"]
+                    return self.lookup_record(version_id)["aliases"]
         raise ValueError(
             f"Unable to find version of analysis step {analysis_step} for 'igvf_pseudobulking_pipeline-v{VERSION}'"
         )
@@ -131,23 +135,24 @@ class GenUploadConfig:
 
         If there are no such files, check intermediate analysis sets.
         """
+        key = (analysis_set_accession, content_type)
+        if key in self._content_accessions:
+            return self._content_accessions[key]
         file_accessions = {
             input_file["accession"]
-            for input_file in self.igvf_lookup.lookup_record(analysis_set_accession)[
-                "files"
-            ]
+            for input_file in self.lookup_record(analysis_set_accession)["files"]
             if input_file["content_type"] == content_type.value
         }
         if len(file_accessions) == 0:
             # didn't find any references for this analysis set, find references for analysis sets
             # listed in "input_for"
-            input_for = self.igvf_lookup.lookup_record(analysis_set_accession).get(
+            input_for = self.lookup_record(analysis_set_accession).get(
                 "input_for", None
             )
             if input_for is not None:
                 file_accessions = {
                     ref
-                    for input_for_accession in self.igvf_lookup.lookup_record(
+                    for input_for_accession in self.lookup_record(
                         analysis_set_accession
                     )["input_for"]
                     for ref in self._lookup_content_accessions(
@@ -158,6 +163,7 @@ class GenUploadConfig:
             self.logger.warning(
                 f"Analysis set {analysis_set_accession} had no files of type {content_type.value}"
             )
+        self._content_accessions[key] = file_accessions
         return file_accessions
 
     def _get_content_type_accession(
@@ -215,7 +221,7 @@ class GenUploadConfig:
 
     def _lookup_aligned_refs(self, accession: AccessionId) -> list[str]:
         """Given the accession ID of an aligned file (e.g. matrix or fragments file) get reference files."""
-        return self.igvf_lookup.lookup_record(accession)["reference_files"]
+        return self.lookup_record(accession)["reference_files"]
 
     @cached_property
     def reference_ids(self) -> set[str]:
@@ -236,7 +242,7 @@ class GenUploadConfig:
     def assembly(self) -> str:
         """Lookup assembly used in principal analyses."""
         assemblies = {
-            self.igvf_lookup.lookup_record(Alias(reference_file))["assembly"]
+            self.lookup_record(Alias(reference_file))["assembly"]
             for reference_file in self.reference_ids
         }
         return ",".join(sorted(assemblies))
@@ -245,7 +251,7 @@ class GenUploadConfig:
     def controlled_access(self) -> bool:
         """Determine if the input set is controlled access."""
         return any(
-            self.igvf_lookup.lookup_record(file_set).get("controlled_access", False)
+            self.lookup_record(file_set).get("controlled_access", False)
             for file_set in self.file_sets
         )
 
@@ -255,11 +261,11 @@ class GenUploadConfig:
         annotations_files: list[IgvfRecord] = [
             file_record
             for file_set in self.file_sets
-            for file_record in self.igvf_lookup.lookup_record(file_set)["files"]
+            for file_record in self.lookup_record(file_set)["files"]
             if file_record["content_type"] == "cell annotations"
         ]
         if self.metadata_path is not None:
-            annotations_md5sum = self._compute_md5sum(self.metadata_path)
+            annotations_md5sum = utils.md5sum(self.metadata_path)
             annotations_files = [
                 record
                 for record in annotations_files
@@ -269,7 +275,7 @@ class GenUploadConfig:
             record["accession"] for record in annotations_files
         }
         if len(record_accessions) == 1:
-            annotations_record = self.igvf_lookup.lookup_record(record_accessions.pop())
+            annotations_record = self.lookup_record(record_accessions.pop())
             return annotations_record["accession"]
         else:
             self.logger.warning(
@@ -282,7 +288,7 @@ class GenUploadConfig:
         """Get a single alias for the annotations file, or return None if it cannot be determined."""
         annotations_accession = self.annotations_file_accession
         if annotations_accession is not None:
-            annotations_record = self.igvf_lookup.lookup_record(annotations_accession)
+            annotations_record = self.lookup_record(annotations_accession)
             return (
                 annotations_record["aliases"][0]
                 if "aliases" in annotations_record
@@ -302,7 +308,7 @@ class GenUploadConfig:
         """Get list of Aliases to fragments files used by the pipeline."""
         return sorted(
             {
-                self.igvf_lookup.lookup_record(fragments_accession)["aliases"][0]
+                self.lookup_record(fragments_accession)["aliases"][0]
                 for fragments_accession in self.fragment_accessions
             }
         )
@@ -312,7 +318,7 @@ class GenUploadConfig:
         """Get list of Aliases to matrix files used by the pipeline."""
         return sorted(
             {
-                self.igvf_lookup.lookup_record(matrix_accession)["aliases"][0]
+                self.lookup_record(matrix_accession)["aliases"][0]
                 for matrix_accession in self.matrix_accessions
             }
         )
@@ -387,7 +393,7 @@ class GenUploadConfig:
         if self.input_accessions is None:
             for file_set in self.file_sets:
                 yield file_set
-                for input_file_set in self.igvf_lookup.lookup_record(file_set).get(
+                for input_file_set in self.lookup_record(file_set).get(
                     "input_file_sets", []
                 ):
                     if (
@@ -403,17 +409,17 @@ class GenUploadConfig:
                 ):
                     yield input_accession.analysis_set_accession
                     if input_accession.matrix_file_accession is not None:
-                        yield self.igvf_lookup.lookup_record(
-                            input_accession.matrix_file_accession
-                        )["file_set"]["accession"]
+                        yield self.lookup_record(input_accession.matrix_file_accession)[
+                            "file_set"
+                        ]["accession"]
                     if input_accession.fragments_file_accession is not None:
-                        yield self.igvf_lookup.lookup_record(
+                        yield self.lookup_record(
                             input_accession.fragments_file_accession
                         )["file_set"]["accession"]
         if self.annotations_file_accession is not None:
-            yield self.igvf_lookup.lookup_record(self.annotations_file_accession)[
-                "file_set"
-            ]["accession"]
+            yield self.lookup_record(self.annotations_file_accession)["file_set"][
+                "accession"
+            ]
 
     def _infer_input_file_sets(self) -> set[AccessionId]:
         """Use the IGVF portal to look up parent file sets if they exist, otherwise use provided intermediate"""
@@ -480,17 +486,9 @@ class GenUploadConfig:
                 f"in both directions."
             )
 
-    @classmethod
-    def _compute_md5sum(cls, filepath: Path, chunk_size: int = 4096) -> str:
-        hasher = hashlib.md5()
-        with filepath.open("rb") as f:
-            while chunk := f.read(chunk_size):
-                hasher.update(chunk)
-        return hasher.hexdigest()
-
-    def md5sum(self, filepath: Path, chunk_size: int = 4096) -> str:
+    def md5sum(self, filepath: Path, chunk_size: int = 2**20) -> str:
         """Compute and md5sum if requested, otherwise return empty string."""
         if self.compute_md5:
             self.logger.info(f"Computing md5 for {filepath}")
-            return self._compute_md5sum(filepath=filepath, chunk_size=chunk_size)
+            return utils.md5sum(filepath=filepath, chunk_size=chunk_size)
         return ""

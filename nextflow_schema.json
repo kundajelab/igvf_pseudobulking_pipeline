@@ -91,6 +91,11 @@
       "default": "owners",
       "description": "Queue for launching SLURM jobs."
     },
+    "non_preemptable_queue": {
+      "type": "string",
+      "default": "normal",
+      "description": "Queue for launching SLURM jobs that should not be preempted."
+    },
     "slurm_queue_size": {
       "type": "number",
       "default": 1000,

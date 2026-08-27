@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-workspace="$1"
-job_id="$2"
+job_id="$1"
+workspace="${2:-$("$script_dir/get-default-workspace.sh")}"
 first_dir=$(dirname "$job_id")
 second_dir=$(basename "$job_id")
 work_dir=$(\

@@ -291,18 +291,18 @@ def load_metadata(
 
 
 def sanitize_to_ascii_underscore(text: str) -> str:
-    """Replace unicode characters with similar ascii, replace whitespace with underscores."""
+    """Replace unicode characters with similar ascii, replace whitespace and commas with underscores."""
     # 1. Normalize Unicode to NFKD form to separate characters from accents
     # 2. Encode to ASCII and ignore characters that cannot be converted
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more whitespace characters with a single underscore
+    # 4. Replace one or more commas or whitespace characters with a single underscore
     # \s+ matches spaces, tabs, and newlines
-    return re.sub(r"\s+", "_", text)
+    return re.sub(r"[,\s]+", "_", text)
 
 
-def _get_cell_name_to_annotation_dict(cell_name: pd.Series) -> dict[str, str]:
+def _get_map_to_sanitized(cell_name: pd.Series) -> dict[str, str]:
     """Get a 1-to-1 map from cell_name to safe ascii annotation.
 
     Append indices as needed to guarantee uniqueness.
@@ -328,14 +328,16 @@ def _add_derived_metadata(metadata_df, added_cols: set[str]) -> None:
     Update metadata_df in place with new 'annotation' and 'pseudobulk_id' columns if they are in added_cols
     """
     # Cell name to annotation mapping
-    cell_name_to_annotation_dict = _get_cell_name_to_annotation_dict(metadata_df["cell_name"])
+    cell_name_to_annotation_dict = _get_map_to_sanitized(metadata_df["cell_name"])
     # Map cell names to annotations in metadata_df
     metadata_df["annotation"] = (
         metadata_df["cell_name"].map(cell_name_to_annotation_dict).astype("category")
     )
+    # subsample can have commas in it sometimes, so we need to sanitize that too
+    subsample_dict = _get_map_to_sanitized(metadata_df["subsample"])
     if "pseudobulk_id" in added_cols:
         metadata_df["pseudobulk_id"] = metadata_df.apply(
-            lambda row: f"{row['annotation']}-{row['subsample']}", axis=1
+            lambda row: f"{row['annotation']}-{subsample_dict[row['subsample']]}", axis=1
         ).astype("category")
 
 

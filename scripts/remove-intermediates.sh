@@ -6,13 +6,12 @@ repo_dir=$(dirname "$script_dir")
 
 function usage {
     cat << EOF
-Usage: $0 [ARGS] -- project_dir
+Usage: $0 [ARGS] -- ANALYSIS_ACCESSION
 
 Remove all intermediate files in the project output folder, replacing symlinks in the output with
 regular files.
 
-If project_dir is "all", do this for every project folder, and additionally remove the .nextflow
-folder and any .nextflow* files, as well as any apptainer files.
+If ANALYSIS_ACCESSION is "all", do this for every project folder.
 
 ARGS:
     -h|--help: show this message and exit.
@@ -51,7 +50,9 @@ function fix_link {
 
 function clear_workspace {
     local -r project_dir="$1"
-    if [[ ! -d "$project_dir/output" ]]; then
+    if [[ "$(basename "$project_dir")" == "apptainer_cache" ]]; then
+        return  # don't clear the common apptainer_cache
+    elif [[ ! -d "$project_dir/output" ]]; then
         # this is not a project folder, remove the whole thing
         rm -r "$project_dir"
         return
@@ -68,9 +69,12 @@ function clear_workspace {
 if [[ "$1" == "all" ]]; then
     find "$workspace" -mindepth 1 -maxdepth 1 -type d \
         | while read -r project_dir; do
+            if [[ "$(basename "$project_dir")" == "apptainer_cache" ]]; then
+                continue  # don't clear the common apptainer_cache
+            fi
             clear_workspace "$project_dir"
         done
     rm -rf "$repo_dir/.nextflow*"
 else
-    clear_workspace "$1"
+    clear_workspace "$workspace/$1"
 fi

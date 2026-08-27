@@ -49,7 +49,6 @@ process CALL_PEAKS {
     base = pseudobulk_id
     overlap_output = "${base}.peaks_overlap_unfiltered.narrowPeak"
     filtered_overlap_calls = "${base}.peaks.narrowPeak.gz"
-    clipped_overlap_calls = "${base}.peaks.clipped.narrowPeak.gz"
     filtered_overlap_bigbed = "${base}.peaks.narrowPeak.bb"
     combined_ppois = "${base}.combined_ppois.bdg"
     combined_sorted_ppois = "${base}.combined_ppois_sorted.bdg"
@@ -81,15 +80,12 @@ process CALL_PEAKS {
     > "${overlap_output}"
 
     1>&2 echo "Filtering blacklist peaks"
-    # Note below that the portal audits `score` values over 1000, because some visualization
-    # software will error in that case. Use awk to cap score.
-    bedtools intersect -v -a "${overlap_output}" -b "${blacklist}" \
-    | awk -F'\\t' -v OFS='\\t' '{ if (\$5 > 1000) \$5=1000; print }' \
-    | bgzip -@ ${task.cpus} -o "${filtered_overlap_calls}"
-
-    # make bigbed version of filtered peaks
-    # note that MACS3 will extend reads past the end of the chromosome, which causes bedToBigBed to
-    # error, so we further filter the end coordinates with awk
+    # Use bedtools to keep peaks that don't overlap the blacklist.
+    # NOTES on fixes that require awk:
+    # 1) below that the portal audits `score` values over 1000, because some visualization
+    #    software will error in that case. Use awk to cap score.
+    # 2) MACS3 can extend intervals past the end of a genomic interval, which can cause
+    #    bedToBigBed and the IGVF Portal to error, so cap END at the maximum genome coordinate
     awk \
         -F '\\t' \
         -v OFS='\\t' \
@@ -97,18 +93,21 @@ process CALL_PEAKS {
         FNR==1 { ++file_num }
         file_num == 1 { max_end[\$1]=\$2 - 1 }
         file_num == 2 {
+            if(\$5 > 1000) { \$5 = 1000 }
             if(\$3 > max_end[\$1]) { \$3 = max_end[\$1] }
             print \$0
         }
         '\
         "${chrom_sizes}" \
-        <(bgzip -cd -@ ${task.cpus} "${filtered_overlap_calls}") \
-    | bgzip -@ ${task.cpus} -o "${clipped_overlap_calls}"
+        <(bedtools intersect -v -a "${overlap_output}" -b "${blacklist}") \
+     \
+    | bgzip -@ ${task.cpus} -o "${filtered_overlap_calls}"
 
+    # make bigbed version of filtered peaks
     bedToBigBed \
         -type=bed6+4 \
         -as="${peaks_auto_sql}" \
-        "${clipped_overlap_calls}" \
+        "${filtered_overlap_calls}" \
         "${chrom_sizes}" \
         "${filtered_overlap_bigbed}"
 

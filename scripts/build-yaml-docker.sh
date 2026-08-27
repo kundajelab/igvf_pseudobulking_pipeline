@@ -29,18 +29,20 @@ while [[ "$#" -gt 1 ]]; do
             ;;
     esac
 done
-yaml=$1
+project=$1
 tag="${2:-$tag}"
 registry="${3:-kundajelab}"
 
+environments_dir="$repo_dir/environments"
+environment_name=$(tr '[:lower:]' '[:upper:]' <<< "$project")
+yaml="$environments_dir/$environment_name.yaml"
 dockerfile="$repo_dir/dockers/pixi-yaml.Dockerfile"
 
 # first get .lock and .toml, work in temporary folder inside environment folder, so they're on the
 # same device and we can use hardlinks (pixi won't follow symlinks)
-environment_name=$(basename "${yaml%.yaml}")
 lock="${yaml%.yaml}.lock"
 toml="${yaml%.yaml}.toml"
-temp_dir="$(mktemp -d -p "$(dirname "$yaml")")"
+temp_dir="$(mktemp -d -p "$environments_dir")"
 trap 'rm -rf "$temp_dir"' EXIT
 cp  "$repo_dir/dockers/.dockerignore" "$temp_dir/"
 cp "$yaml" "$temp_dir/"
@@ -52,7 +54,7 @@ fi
 pushd "$temp_dir" &> /dev/null
 unset PIXI_PROJECT_MANIFEST
 pixi init \
-    --import "${environment_name}.yaml" \
+    --import "$yaml" \
     -p linux-64 -p osx-64 -p osx-arm64 -p linux-aarch64 \
     .
 # update lock
@@ -62,10 +64,11 @@ cp "$temp_dir/pixi.toml" "$toml"
 if [[ ! -f "$lock" ]]; then
     cp "$temp_dir/pixi.lock" "$lock"
 fi
+rm -rf "$temp_dir"
 
 # now build docker
-pushd "$(dirname "$yaml")" &> /dev/null
-container_name=$(tr '[:upper:]' '[:lower:]' <<< "$environment_name")
+pushd "$environments_dir" &> /dev/null
+container_name="$project"
 local_tag="${container_name}:${tag}"
 remote_tag="${registry}/${local_tag}"
 docker build \

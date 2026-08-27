@@ -72,6 +72,7 @@ function validate_version {
         exit 1
     fi
     # remove leading v if present
+    # shellcheck disable=SC2001
     sed 's/^v//' <<< "$version"
 }
 

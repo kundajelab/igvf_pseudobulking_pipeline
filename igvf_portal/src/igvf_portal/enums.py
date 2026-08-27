@@ -111,3 +111,9 @@ class LogLevel(Enum):
     error = logging.ERROR
     critical = logging.CRITICAL
     fatal = logging.FATAL
+
+
+class Concurrency(Enum):
+    NONE = None
+    THREAD = "Thread"
+    PROCESS = "Process"

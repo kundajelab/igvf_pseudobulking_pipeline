@@ -6,13 +6,17 @@ ARG ENV_NAME
 FROM ghcr.io/prefix-dev/pixi@sha256:2537738f8b7e2c7a7f070f56928ab959c4559a8d7e04f71eb16b0f779f0588f6 AS build
 ARG ENV_NAME
 
-COPY . "/opt/$ENV_NAME"
-
-# Install the project into the ENV_NAME
-WORKDIR "/opt/$ENV_NAME"
-
 # git is needed to resolve git+https pypi dependencies during pixi install
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
+# create hack version of date to fix nextflow bug https://github.com/nextflow-io/nextflow/issues/7114
+RUN echo '#!/usr/bin/env bash' > /usr/local/bin/date && \
+    echo 'if [ "$1" = "+%s%3N" ]; then /usr/bin/date +%s%N | cut -c1-13 ; else /usr/bin/date "$@" ; fi' >> /usr/local/bin/date && \
+    chmod a+x /usr/local/bin/date
+
+# Install the project into the ENV_NAME
+COPY . "/opt/$ENV_NAME"
+WORKDIR "/opt/$ENV_NAME"
 
 # install the packages into this environment
 RUN pixi install && ls -lah
@@ -21,11 +25,6 @@ RUN pixi install && ls -lah
 RUN pixi shell-hook > /opt/shell-hook.sh
 # extend the shell-hook script to run the command passed to the container
 RUN echo 'exec "${@}"' >> /opt/shell-hook.sh
-
-# create hack version of date to fix nextflow bug https://github.com/nextflow-io/nextflow/issues/7114
-RUN echo '#!/usr/bin/env bash' > /usr/local/bin/date && \
-    echo 'if [ "$1" = "+%s%3N" ]; then /usr/bin/date +%s%N | cut -c1-13 ; else /usr/bin/date "$@" ; fi' >> /usr/local/bin/date && \
-    chmod a+x /usr/local/bin/date
 
 # ubuntu 26.04
 # https://hub.docker.com/layers/library/ubuntu/26.04/images/sha256-37a0633b900e99d0937986022b4b4018908e1361704425313cc1c348bebd7230
@@ -37,18 +36,19 @@ WORKDIR "/opt/$ENV_NAME"
 RUN groupadd --system --gid 999 nonroot \
     && useradd --system --gid 999 --uid 999 --create-home nonroot
 
-# copy the environments into prod container
-COPY --from=build --chown=nonroot:nonroot "/opt/$ENV_NAME/" "/opt/$ENV_NAME/"
-# copy the shell-hook so the environment can auto-activate
-COPY --from=build --chown=nonroot:nonroot /opt/shell-hook.sh /opt/shell-hook.sh
-# copy temporary fix to bug with nextflow date on rust coreutils
-COPY --from=build /usr/local/bin/date /usr/local/bin/date
-
 # use the nonroot user
 USER nonroot
+
+# for apptainer, need to update path
+ENV PATH="/opt/$ENV_NAME/.pixi/envs/default/bin:$PATH"
+
+# copy temporary fix to bug with nextflow date on rust coreutils
+COPY --from=build /usr/local/bin/date /usr/local/bin/date
+# copy the shell-hook so the environment can auto-activate
+COPY --from=build --chown=nonroot:nonroot /opt/shell-hook.sh /opt/shell-hook.sh
 
 # set the entrypoint to the shell-hook script (activate the environment and run the command)
 ENTRYPOINT ["/bin/bash", "/opt/shell-hook.sh"]
 
-# for apptainer, need to update path
-ENV PATH="/opt/$ENV_NAME/.pixi/envs/default/bin:$PATH"
+# copy the environments into prod container
+COPY --from=build --chown=nonroot:nonroot "/opt/$ENV_NAME/" "/opt/$ENV_NAME/"

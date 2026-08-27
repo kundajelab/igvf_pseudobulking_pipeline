@@ -2,7 +2,7 @@ import csv
 import logging
 import os
 from collections.abc import Iterable, Iterator, Mapping
-from concurrent.futures import ProcessPoolExecutor, wait
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
@@ -89,7 +89,7 @@ def _add_status_conditional_formatting(
                                 }
                             ],
                         },
-                        "format": {"backgroundColor": color},
+                        "format": {"backgroundColor": {**color}},
                     },
                 },
                 "index": index,
@@ -167,7 +167,7 @@ def _get_pseudobulk_status_and_date(
     audit_failures = set()
     date = None
     for input_id in analysis_set.input_for:
-        input_record = api.get_by_id(input_id).actual_instance
+        input_record = utils.retry(num_tries=3)(api.get_by_id)(input_id).actual_instance
         if input_record is None:
             raise RuntimeError(f"Unable to get actual_instance of {input_id}")
         if input_record.type is not None and "PseudobulkSet" in input_record.type:
@@ -199,7 +199,7 @@ def _process_analysis_set(
     if analysis_set.files is None:
         return None, PseudobulkUploadStatus.UNATTEMPTED, None
     for file_id in analysis_set.files:
-        file = api.get_by_id(file_id)
+        file = utils.retry(num_tries=3)(api.get_by_id)(file_id)
         if file.content_type == "cell annotations":
             annotations_file = cast(TabularFile | None, file.actual_instance)
             if annotations_file is not None and annotations_file.status == "deleted":
@@ -241,29 +241,36 @@ def _get_tracker_row(
         return analysis_set.accession, row, annotations_file_qc.cl_ids
 
 
+def _set_num_workers(requested_workers: int | None, default: int = 12) -> int:
+    if requested_workers is None or requested_workers <= 0:
+        num_workers = os.process_cpu_count()
+        if num_workers is None:
+            num_workers = os.cpu_count()
+            if num_workers is None:
+                num_workers = default
+        return num_workers
+    else:
+        return requested_workers
+
+
 def _iter_rows(
     search_result_items: Iterable[SearchResultItem] | None,
     logger: logging.Logger,
     igvf_mode: IgvfMode,
     cl_ids_to_update: set[str],
-    num_workers: int | None = None,
+    num_workers: int,
 ) -> Iterator[PseudobulkTrackerRow]:
     """Iterate over principal analysis sets and yield a PseudobulkTrackerRow with details of their status."""
     if search_result_items is None:
         raise ValueError("No principal analysis sets were found")
-    if num_workers is None or num_workers <= 0:
-        num_workers = os.process_cpu_count()
-        if num_workers is None:
-            num_workers = os.cpu_count()
+    logger.info(f"Scanning analysis sets with {num_workers} workers.")
     with ProcessPoolExecutor(
         max_workers=num_workers, initializer=_worker_initalizer, initargs=(igvf_mode,)
     ) as executor:
-        futures = [
-            executor.submit(_get_tracker_row, item) for item in search_result_items
-        ]
-        for future in futures:
-            wait([future])
-            match future.result():
+        for result in executor.map(
+            _get_tracker_row, search_result_items, buffersize=2 * num_workers
+        ):
+            match result:
                 case accession, None, _:
                     logger.warning(
                         f"Found analysis set {accession} with no annotation file."
@@ -303,7 +310,7 @@ def make_pseudobulk_tracker(
     upload: bool = False,
     spreadsheet_url: str = "https://docs.google.com/spreadsheets/d/1pYhl_ffq3pz_Y9zXmhqU62Ob5cLmzuQo_l5r6Bm7bZ0/edit",
     google_service_account_json: Path | None = None,
-    num_workers: int = -1,
+    num_workers: int = 12,
     igvf_mode: IgvfMode = IgvfMode.prod,
 ) -> None:
     """Write pseudobulk data set status to a table.
@@ -349,7 +356,7 @@ def make_pseudobulk_tracker(
             logger=logger,
             igvf_mode=igvf_mode,
             cl_ids_to_update=cl_ids,
-            num_workers=num_workers,
+            num_workers=_set_num_workers(requested_workers=num_workers, default=12),
         )
         _write_tsv(output, rows_iter)
         # now we've iterated through the rows and have all the unique CL_ids. Find the existing CL_ids on the portal
