@@ -22,7 +22,6 @@ import polars as pl
 from plotly import subplots
 from plotly.graph_objs import Figure
 
-# TODO: fix outputs of early pipeline stages to output integer, then change schemas to use integer values
 ACCESSION_QC_SCHEMA = pl.Schema(
     {
         "analysis_set_accession": pl.String(),
@@ -31,11 +30,11 @@ ACCESSION_QC_SCHEMA = pl.Schema(
         "found_in_rna": pl.Boolean(),
         "found_in_atac": pl.Boolean(),
         "pseudobulk_id": pl.String(),
-        "rna_read_count": pl.Float64(),
-        "gene_count": pl.Float64(),
+        "rna_read_count": pl.UInt64(),
+        "gene_count": pl.UInt64(),
         "pct_mito": pl.Float64(),
         "pct_ribo": pl.Float64(),
-        "num_frags": pl.Float64(),
+        "num_frags": pl.UInt64(),
         "pct_duplicated_reads": pl.Float64(),
         "nucleosomal_signal": pl.Float64(),
         "tss_enrichment": pl.Float64(),
@@ -47,11 +46,11 @@ PSEUDOBULK_QC_SCHEMA = pl.Schema(
         "analysis_set_accession": pl.String(),
         "barcode_sample": pl.String(),
         "subsample": pl.String(),
-        "rna_read_count": pl.Float64(),
-        "gene_count": pl.Float64(),
+        "rna_read_count": pl.UInt64(),
+        "gene_count": pl.UInt64(),
         "pct_mito": pl.Float64(),
         "pct_ribo": pl.Float64(),
-        "num_frags": pl.Float64(),
+        "num_frags": pl.UInt64(),
         "pct_duplicated_reads": pl.Float64(),
         "nucleosomal_signal": pl.Float64(),
         "tss_enrichment": pl.Float64(),

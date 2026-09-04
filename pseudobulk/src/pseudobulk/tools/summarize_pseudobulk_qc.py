@@ -133,8 +133,8 @@ def _compute_pseudobulk_qc_summary(
 
     # RNA
     if pseudobulk_counts is None or not pseudobulk_counts.exists():
-        pseudobulk_qc_summary["rna_read_count"] = 0
-        pseudobulk_qc_summary["gene_count"] = 0
+        pseudobulk_qc_summary["rna_read_count"] = None
+        pseudobulk_qc_summary["gene_count"] = None
         pseudobulk_qc_summary["pct_mito"] = float("nan")
         pseudobulk_qc_summary["pct_ribo"] = float("nan")
     else:

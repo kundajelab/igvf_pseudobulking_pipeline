@@ -636,8 +636,10 @@ def merge_rna_and_atac_qc(
         combined_qc["found_in_rna"] = combined_qc["found_in_rna"].fillna(0.0).astype(bool)
     if "found_in_atac" in combined_qc.columns:
         combined_qc["found_in_atac"] = combined_qc["found_in_atac"].fillna(0.0).astype(bool)
+    if "num_frags" in combined_qc.columns:
+        combined_qc["num_frags"] = combined_qc["num_frags"].astype(pd.UInt64Dtype())
     if "rna_read_count" in combined_qc.columns:
-        combined_qc["rna_read_count"] = combined_qc["rna_read_count"].fillna(0.0).astype(np.uint64)
+        combined_qc["rna_read_count"] = combined_qc["rna_read_count"].astype(pd.UInt64Dtype())
     if "gene_count" in combined_qc.columns:
-        combined_qc["gene_count"] = combined_qc["gene_count"].fillna(0.0).astype(np.uint64)
+        combined_qc["gene_count"] = combined_qc["gene_count"].astype(pd.UInt64Dtype())
     return _reorder_qc_columns(combined_qc)

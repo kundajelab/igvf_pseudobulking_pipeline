@@ -7,7 +7,6 @@ from concurrent.futures.process import BrokenProcessPool
 from multiprocessing import Lock, cpu_count
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from pseudobulk import utils
@@ -66,8 +65,8 @@ def _load_and_combine_accession_qc(
     if rna_qc_tsv.exists():
         rna_qc = utils.read_csv(rna_qc_tsv)
         rna_qc["found_in_rna"] = True
-        rna_qc["rna_read_count"] = rna_qc["rna_read_count"].astype(np.uint64)
-        rna_qc["gene_count"] = rna_qc["gene_count"].astype(np.uint64)
+        rna_qc["rna_read_count"] = rna_qc["rna_read_count"].astype(pd.UInt64Dtype())
+        rna_qc["gene_count"] = rna_qc["gene_count"].astype(pd.UInt64Dtype())
         with log_lock:
             logger.info(f"Got RNA QC for {accession} with shape {rna_qc.shape}")
     else:
@@ -77,6 +76,7 @@ def _load_and_combine_accession_qc(
         identifier=accession, atac_qc=atac_qc, rna_qc=rna_qc, logger=logger, log_lock=log_lock
     )
     with log_lock:
+        logger.info(combined_qc["num_frags"].dtype)
         logger.info(f"Writing combined QC for {accession}")
     combined_qc.to_csv(f"{output_dir}/{accession}_per_cell_qc.tsv.gz", sep="\t", index=False)
 
