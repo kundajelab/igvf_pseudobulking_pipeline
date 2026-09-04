@@ -6,9 +6,9 @@ repo_dir=$(dirname "$script_dir")
 
 find "$repo_dir" -mindepth 1 -maxdepth 1 -type d \
 | while read -r dir; do
-    if [[ -d "$dir/.pixi" ]]; then
+    if [[ -f "$dir/pixi.lock" ]]; then
         printf "%s\tpixi\n" "$(basename "$dir")"
-    elif [[ -d "$dir/.venv" ]]; then
+    elif [[ -f "$dir/uv.lock" ]]; then
         printf "%s\tuv\n" "$(basename "$dir")"
     fi
 done

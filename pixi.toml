@@ -10,8 +10,8 @@ version = "2.0.0"
 libc   = { family = "glibc", version = "2.17" }
 
 [tool.custom_settings]
-pixi_sub_projects = ["download_accession_files"]
-uv_sub_projects = ["igvf_upload", "pseudobulk", "visualize_qc"]
+pixi_sub_projects = ["igvf_portal"]
+uv_sub_projects = ["pseudobulk", "visualize_qc"]
 
 [tasks]
 pipeline = {
