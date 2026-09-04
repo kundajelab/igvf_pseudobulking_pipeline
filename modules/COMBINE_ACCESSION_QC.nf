@@ -21,6 +21,7 @@ process COMBINE_ACCESSION_QC {
     publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/analysis_accession_qc_reports",
         pattern: "*_per_cell_qc.tsv.gz",
         mode: params.publish_mode
+    cache false
 
     input:
         path(atac_qc_files, name: "atac_qc_dir/*", arity: "0..*")
