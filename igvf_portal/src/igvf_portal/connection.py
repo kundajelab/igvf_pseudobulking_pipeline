@@ -1,11 +1,10 @@
 import json
-import os
-import subprocess
 from contextlib import nullcontext
 from multiprocessing.synchronize import Lock as ProcessLock
 from pathlib import Path
 from threading import Lock as ThreadLock
 
+import boto3
 import igvf_utils as iu
 import igvf_utils.gc_storage
 import igvf_utils.transfer_to_gcp
@@ -391,35 +390,35 @@ class PConnection(Connection):
             upload_credentials = self.get_upload_credentials(file_id)
             aws_creds = self.extract_aws_upload_credentials(upload_credentials)
         bucket, key = utils.parse_s3_uri(upload_url)
-        # TODO: replace with boto3 call
-        result = subprocess.run(
-            f"aws s3api head-object --bucket '{bucket}' --key '{key}'",
-            shell=True,
-            capture_output=True,
-            env={**os.environ, **aws_creds},
-        )
 
-        if result.returncode != 0:
+        try:
+            s3_client = boto3.client(
+                "s3",
+                aws_access_key_id=aws_creds["AWS_ACCESS_KEY_ID"],
+                aws_secret_access_key=aws_creds["AWS_SECRET_ACCESS_KEY"],
+                aws_session_token=aws_creds["AWS_SESSION_TOKEN"],
+            )
+            result = s3_client.head_object(Bucket=bucket, Key=key)
+        except s3_client.exceptions.NoSuchKey:
             self.logger.info(f"Upload url '{upload_url}' doesn't already exist.")
             return False
+
+        remote_md5_sum = result.get("Metadata", {}).get("md5sum", "")
+        local_md5_sum = utils.md5sum(file_path)
+        # this is unneccessary: interrupted/failed uploads do not result in remote obects,
+        # so the only way the metadata could be present is if the object uploads successfully
+        # remote_crc64_nvme_checksum = result.get("ChecksumCRC64NVME", "")
+        # local_crc64_nvme_checksum = utils.crc64_nvme_checksum(file_path)
+        alread_exists = remote_md5_sum == local_md5_sum
+        if alread_exists:
+            self.logger.info(
+                f"Upload url '{upload_url}' md5_sum matches local file, will not re-upload."
+            )
         else:
-            result = json.loads(result.stdout)
-            remote_md5_sum = result.get("Metadata", {}).get("md5sum", "")
-            local_md5_sum = utils.md5sum(file_path)
-            # this is unneccessary: interrupted/failed uploads do not result in remote obects,
-            # so the only way the metadata could be present is if the object uploads successfully
-            # remote_crc64_nvme_checksum = result.get("ChecksumCRC64NVME", "")
-            # local_crc64_nvme_checksum = utils.crc64_nvme_checksum(file_path)
-            alread_exists = remote_md5_sum == local_md5_sum
-            if alread_exists:
-                self.logger.info(
-                    f"Upload url '{upload_url}' md5_sum matches local file, will not re-upload."
-                )
-            else:
-                self.logger.info(
-                    f"Upload url '{upload_url}' md5_sum does NOT match local file, will re-upload."
-                )
-            return alread_exists
+            self.logger.info(
+                f"Upload url '{upload_url}' md5_sum does NOT match local file, will re-upload."
+            )
+        return alread_exists
 
     def upload_file(
         self,
@@ -505,20 +504,19 @@ class PConnection(Connection):
         self.logger.debug(f"Running command '{cmd}'.")
         if self.check_dry_run():
             return
-        # TODO: replace with boto3 call
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            env=os.environ.update(aws_creds),
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=aws_creds["AWS_ACCESS_KEY_ID"],
+            aws_secret_access_key=aws_creds["AWS_SECRET_ACCESS_KEY"],
+            aws_session_token=aws_creds["AWS_SESSION_TOKEN"],
         )
-        if result.returncode != 0:
-            self.logger.error(
-                f"Subprocess command '{cmd}' failed with return code '{result.returncode}'.\n"
-                f"Stdout is '{result.stdout.decode('utf-8')}'\n."
-                f"Stderr is '{result.stderr.decode('utf-8')}'."
-            )
-            raise RuntimeError(f"Failed to upload file '{file_path}' for {file_id}.")
+        bucket, key = utils.parse_s3_uri(upload_url)
+        s3_client.upload_file(
+            Filename=f"{file_path}",
+            Bucket=bucket,
+            Key=key,
+            ExtraArgs={"Metadata": {"md5sum": utils.md5sum(file_path)}},
+        )
         self.logger.info(f"Successfully uploaded {file_path} to {upload_url}.")
 
     def get(self, rec_ids, database=False, ignore404=True, frame=None):

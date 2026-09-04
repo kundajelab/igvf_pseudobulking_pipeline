@@ -18,7 +18,6 @@ from io import TextIOWrapper
 from pathlib import Path
 from typing import Callable, Literal, TextIO
 
-import igvf_utils
 import requests
 from igvf_client import ApiClient, Configuration, IgvfApi
 
@@ -330,29 +329,3 @@ def md5sum(filepath: Path, chunk_size: int = 2**20) -> str:
         while chunk := f.read(chunk_size):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-# TODO: remove this block once I'm sure it's not needed.
-# It requires crcmod as a dependency, so to restore we need to pixi add --pypi crcmod
-# # CRC-64/NVME: refin=true, refout=true → rev=True
-# # crcmod expects the NORMAL (non-reflected) polynomial when rev=True
-# CRC64_NVME_FUNC = crcmod.mkCrcFun(
-#     0xAD93D23594C93659,  # normal-form polynomial
-#     initCrc=0xFFFFFFFFFFFFFFFF,  # init value
-#     xorOut=0xFFFFFFFFFFFFFFFF,  # xorout value (was wrong before!)
-#     rev=True,  # refin=true, refout=true
-# )
-# """Define the CRC64NVME hash function."""
-
-# # TODO: make test
-# # # Verify with the known check value: CRC of "123456789" should be 0xAE8B14860A799888
-# # check_val = CRC64_NVME_FUNC(b"123456789")
-# # assert check_val == 0xAE8B14860A799888, f"Check failed: {hex(check_val)}"
-# # print("✅ Check value verified")
-
-
-# def crc64_nvme_checksum(filepath: Path) -> str:
-#     """Compute checksum used by AWS S3."""
-#     with filepath.open("rb") as f_in:
-#         checksum_int = CRC64_NVME_FUNC(f_in.read())
-#     return base64.b64encode(checksum_int.to_bytes(8, "big")).decode()
