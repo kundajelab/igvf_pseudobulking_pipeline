@@ -2,9 +2,9 @@
 set -euo pipefail
 
 tag="$(git describe --tags --abbrev=0)"
-project=""
+project="all"
 workspace="$(scripts/get-default-workspace.sh)"
-apptainer_cache_dir="$workspace/apptainer_cache/"
+apptainer_cache_dir="$workspace/apptainer_cache"
 
 function usage {
     cat << EOF
@@ -55,14 +55,33 @@ while [[ "$#" -ge 1 ]]; do
     esac
 done
 
-# first pull the image with minimal nuisance warnings
-apptainer pull \
-    -F \
-    "$apptainer_cache_dir/kundajelab-${project}-$tag.img" \
-    "docker://kundajelab/${project}:$tag" \
-    2> >(grep -v "harmless EPERM" >&2)
+function pull {
+    # first pull the image with minimal nuisance warnings
+    local -r project="$1"
+    echo apptainer pull \
+        -F \
+        "$apptainer_cache_dir/kundajelab-${project}-$tag.img" \
+        "docker://kundajelab/${project}:$tag" \
+        2> >(grep -v "harmless EPERM" >&2)
+}
 
-if [[ "$#" -gt 0 ]]; then
-    command="${*}"
-    apptainer run "$apptainer_cache_dir/kundajelab-${project}-$tag.img" "${command[@]}"
+if [[ "$project" == "all" ]]; then
+    # project set to all
+    if [[ "$#" -gt 0 ]]; then
+        1>&2 echo "Must specify a project to run a command."
+        1>&2 usage
+        exit 1
+    fi
+    # no command, just pull / update all projects
+    script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+    while read -r project _project_type; do
+        pull "$project"
+    done < <("$script_dir/find-projects.sh")
+else
+    pull "$project"
+
+    if [[ "$#" -gt 0 ]]; then
+        command="${*}"
+        apptainer run "$apptainer_cache_dir/kundajelab-${project}-$tag.img" "${command[@]}"
+    fi
 fi
