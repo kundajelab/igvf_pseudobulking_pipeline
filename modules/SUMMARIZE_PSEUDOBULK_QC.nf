@@ -16,6 +16,7 @@ process SUMMARIZE_PSEUDOBULK_QC {
         pattern: "${pseudobulk_qc_out}",
         saveAs: { _f -> "per_cell_qc.tsv.gz" },
         mode: params.publish_mode
+    cache false
 
     input:
         tuple val(pseudobulk_id),

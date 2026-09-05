@@ -58,6 +58,7 @@ done
 function pull {
     # first pull the image with minimal nuisance warnings
     local -r project="$1"
+    1>&2 echo "Pulling $project"
     apptainer pull \
         -F \
         "$apptainer_cache_dir/kundajelab-${project}-$tag.img" \
