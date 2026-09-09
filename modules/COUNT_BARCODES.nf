@@ -46,7 +46,7 @@ process COUNT_UNIQUE_BARCODES {
         }
         END {
             if(num_fragments == 0) {
-                print "Found 0 fragments to pseudobulk" | "cat >&2"
+            print "Found 0 fragments to pseudobulk in ${fragments}" | "cat >&2"
                 exit 1
             }
             print num_codes "\\t" num_fragments
