@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+export JAVA_HOME="$PIXI_PROJECT_ROOT/.pixi/envs/default/lib/jvm"
 "alias conda=mamba"
+# Note: quoting the eval causes errors, it must remain unquoted.
+# shellcheck disable=SC2046
 eval $(pixi shell-hook)
-pushd "${CONDA_PREFIX}/bin" &> /dev/null
-if [[ ! -f conda ]]; then
+if [[ ! -f "${CONDA_PREFIX}/bin/conda" ]]; then
+    pushd "${CONDA_PREFIX}/bin" &> /dev/null || exit 1
     ln -s mamba conda
 fi
-# maybe causes crashes?
-#export LD_LIBRARY_PATH="$PIXI_PROJECT_ROOT/.pixi/envs/$PIXI_ENVIRONMENT_NAME/lib:${LD_LIBRARY_PATH}"

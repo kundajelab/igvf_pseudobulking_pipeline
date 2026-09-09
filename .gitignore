@@ -2,6 +2,7 @@ __pycache__/
 .nextflow/
 .nextflow*
 .venv/
+.envrc
 
 .vscode/
 .zed/
