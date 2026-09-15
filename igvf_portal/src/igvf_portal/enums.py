@@ -45,10 +45,12 @@ class AnalysisStep(Enum):
 
 
 class ContentType(Enum):
-    """Cell with content type"""
+    """Enum for select IGVF Portal content_types"""
 
     MATRIX = "cell by gene matrix"
     FRAGMENTS = "fragments"
+    PEAKS = "peaks"
+    GENOME_REFERENCE = "genome reference"
 
     @property
     def extension(self) -> str:
@@ -57,6 +59,10 @@ class ContentType(Enum):
                 return "h5ad"
             case ContentType.FRAGMENTS:
                 return "bed.gz"
+            case ContentType.PEAKS:
+                return "tsv.gz"
+            case ContentType.GENOME_REFERENCE:
+                return "fasta.gz"
 
 
 class IgvfMode(StrEnum):
@@ -67,7 +73,7 @@ class IgvfMode(StrEnum):
     sandbox = "sandbox"
 
     @property
-    def portal_api_url(self) -> str:
+    def url(self) -> str:
         match self:
             case IgvfMode.prod:
                 return "https://api.data.igvf.org"

@@ -43,6 +43,7 @@ class UploadRow(TypedDict):
     file_set_type: NotRequired[str]
     file_size: NotRequired[int]
     file_format: NotRequired[str]
+    file_format_type: NotRequired[str]
     content_type: NotRequired[str]
     merged: NotRequired[bool]
     md5sum: NotRequired[str]
@@ -60,6 +61,7 @@ class UploadRow(TypedDict):
     input_file_sets: NotRequired[str]
     documents: NotRequired[str]
     normalized: NotRequired[bool]
+    controlled_access: NotRequired[bool]
 
 
 IgvfRecord = TypedDict(
@@ -69,23 +71,29 @@ IgvfRecord = TypedDict(
         "@type": list[str],
         "accession": AccessionId,
         "aliases": list[Alias],
-        "input_for": NotRequired[list[AccessionId]],
+        "input_for": NotRequired[list[PortalId]],
         "input_file_sets": list["IgvfRecord"],
         "file_set": NotRequired["IgvfRecord"],
         "file_set_type": NotRequired["str"],
         "files": list["IgvfRecord"],
         "content_type": str,
+        "file_format": NotRequired["str"],
+        "file_format_type": NotRequired["str"],
         "controlled_access": NotRequired[bool],
-        "s3_uri": str,
+        "s3_uri": NotRequired[str],
         "href": str,
         "submitted_file_name": str,
+        "submitted_files_timestamp": NotRequired[str],
         "status": str,
         "audit": dict[str, object],
-        "reference_files": list[PortalId],
+        "validation_error_detail": NotRequired[str],
+        "reference_files": list["IgvfRecord"] | list["PortalId"],
         "assembly": str,
         "term_name": NotRequired[str],
         "md5sum": NotRequired[str],
         "summary": NotRequired[str],
+        "uniform_pipeline_status": NotRequired[str],
+        "upload_status": NotRequired[bool],
     },
 )
 

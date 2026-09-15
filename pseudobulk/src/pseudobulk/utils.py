@@ -12,7 +12,6 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from logging import Logger
 from pathlib import Path
-from threading import Lock
 from types import MappingProxyType
 from typing import (
     Callable,
@@ -609,7 +608,10 @@ def merge_rna_and_atac_qc(
     match len(rna_qc), len(atac_qc):
         case 0, 0:
             # RNA and ATAC QC are empty (but contain the correct columns), return empty DataFrame
-            combined_qc = pd.DataFrame([], columns=rna_qc.columns + atac_qc.columns)
+            combined_qc = pd.DataFrame(
+                [],
+                columns=rna_qc.columns.append(rna_qc.columns).drop_duplicates(keep="first"),
+            )
             with _log_lock:
                 logger.info(f"No RNA QC or ATAC QC for {identifier}")
         case 0, _:

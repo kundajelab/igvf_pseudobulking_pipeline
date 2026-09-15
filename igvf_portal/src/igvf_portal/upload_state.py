@@ -175,7 +175,7 @@ class UploadState:
                 'script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )',
                 'pushd "$script_dir" &> /dev/null',
                 f'dry_run_arg="{"--dry-run" if self.config.dry_run else ""}"',
-                f'igvf_mode="{self.config.igvf_lookup.igvf_mode}"',
+                f'igvf_mode="{self.config.connection.mode.value}"',
             ]
         )
 

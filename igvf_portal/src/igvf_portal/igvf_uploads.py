@@ -63,7 +63,7 @@ class IgvfUploadBase(abc.ABC):
     @classmethod
     def _lookup_input_file_sets_alias(cls, config: GenUploadConfig) -> list[Alias]:
         return [
-            config.igvf_lookup.lookup_record(file_set)["aliases"][0]
+            config.lookup_record(file_set)["aliases"][0]
             for file_set in config.file_sets
         ]
 
@@ -272,12 +272,13 @@ class IgvfPseudobulk(IgvfUploadBase):
         cell_type = PortalId(f"/sample-terms/{cl_id.replace(':', '_')}/")
         try:
             term_name = config.lookup_record(cell_type)["term_name"]
-        except requests.exceptions.HTTPError:
+        except requests.exceptions.HTTPError, ValueError:
             # note, if this happens, upload will fail. But we can still generate the correct upload script,
             # and manually ask the DACC to add the required SampleTerm
             records = utils.lookup_ontology_by_cl_id(cl_id)
             if records is None:
                 raise ValueError(f"Unknown possibly invalid CL_id: {cl_id}")
+            config.logger.warning(f"IGVF Portal is missing '{cell_type}'")
             term_name = cast(str, records[0]["label"])
 
         # If cell_qualifier is speicifed in the annotations, use it.

@@ -2,30 +2,49 @@ import dataclasses
 import json
 import logging
 import multiprocessing
-from collections.abc import Collection
+from collections.abc import (
+    Collection,
+    Sequence,
+)
 from functools import cached_property
 from multiprocessing.synchronize import Lock as ProcessLock
 from threading import Lock as ThreadLock
-from typing import Callable
+from typing import (
+    Callable,
+    Final,
+)
 
 from igvf_portal import utils
 from igvf_portal.connection import PConnection
 from igvf_portal.enums import Concurrency, IgvfMode
 
+DRY_RUN: Final[bool] = False
+NUM_TRIES: Final[int] = 3
+DELAY: Final[float] = 5.0
+BACKOFF: Final[float] = 2.0
+OVERWRITE_ARRAY_VALUES: Final[bool] = False
+REMOVE_PROPERTIES: Final[tuple[str, ...]] = ()
+UPLOAD_FILE: Final[bool] = True
+UPLOAD_DUPLICATE: Final[bool] = True
+CONTINUE_ON_FAILED_CREDENTIALS: Final[bool] = True
+EXPECT_PATCH: Final[bool] = False
+
 
 @dataclasses.dataclass(slots=False, kw_only=True)
 class RegisterConfig:
     igvf_mode: IgvfMode
-    dry_run: bool
     profile_id: str
-    num_tries: int
-    delay: float
-    backoff: float
-    overwrite_array_values: bool
-    remove_properties: list[str]
-    upload_file: bool
-    upload_duplicate: bool
-    continue_on_failed_credentials: bool = True
+    dry_run: bool = DRY_RUN
+    num_tries: int = NUM_TRIES
+    delay: float = DELAY
+    backoff: float = BACKOFF
+    overwrite_array_values: bool = OVERWRITE_ARRAY_VALUES
+    remove_properties: Sequence[str] = REMOVE_PROPERTIES
+    upload_file: bool = UPLOAD_FILE
+    upload_duplicate: bool = UPLOAD_DUPLICATE
+    continue_on_failed_credentials: bool = CONTINUE_ON_FAILED_CREDENTIALS
+    expect_patch: bool = EXPECT_PATCH
+
     concurrency: Concurrency = Concurrency.NONE
 
     @cached_property

@@ -9,6 +9,7 @@ queue="owners"
 profile="$(scripts/get-default-profile.sh)"
 workspace="$(scripts/get-default-workspace.sh)"
 mode="prod"
+igvf_dry_run="true"
 
 function usage {
     cat << EOF
@@ -27,6 +28,8 @@ ARGS:
     -w|--workspace: Where to output files. Defaults to inferred from environment ($workspace)
     -a|--principal-analysis: Specify the accession of the principal analysis set
     -m|--mode: Specify IGVF server: "prod", "staging", or "sandbox" ($mode)
+    --dry-run/--no-dry-run: Turn on/off igvf_dry_run. With dry-run *on* no changes to the IGVF portal are made.
+      With dry-run *off* records are posted/patched and files are uploaded. Default: $igvf_dry_run
 EOF
 }
 
@@ -65,6 +68,14 @@ while [[ "$#" -ge 1 ]]; do
             esac
             shift 2
             ;;
+        "--dry-run")
+            igvf_dry_run="true"
+            shift 1
+            ;;
+        "--no-dry-run")
+            igvf_dry_run="false"
+            shift 1
+            ;;
         "--")
             shift 1
             break
@@ -85,20 +96,19 @@ metadata="${1:-"$repo_dir/test_metadata.tsv"}"
 if [[ "$#" -ge 1 ]]; then
     shift 1
 fi
-nextflow_args="${*}"
 if [[ "$metadata" =~ \.tsv(\.gz)?$ ]]; then
     metadata_file="$metadata"
     # ensure we have the principal analysis accession
     if [[ -z "$principal_analysis" ]]; then
         if [[ "$metadata_file" =~ test_metadata\.tsv$ ]]; then
             principal_analysis=IGVFDS5417HJRJ,IGVFDS6430MYNQ
-            run_folder="$workspace/${principal_analysis//,/-}"
-            mkdir -p "$run_folder"
         else
             1>&2 echo "Must specify metadata accession, or metadata file and principal analysis accession"
             exit 1
         fi
     fi
+    run_folder="$workspace/${principal_analysis//,/-}"
+    mkdir -p "$run_folder"
 else
     # ensure we have the principal analysis accession
     if [[ -z "$principal_analysis" ]]; then
@@ -115,8 +125,16 @@ else
         fi
     fi
     run_folder="$workspace/${principal_analysis//,/-}"
-    # download the metadata file if it isn't already present
     metadata_file="$run_folder/${metadata}.tsv.gz"
+    if [[ -f "$metadata_file" ]]; then
+        # metadata file already exists, check if it's the same
+        local_hash=$(md5sum < "$metadata_file" | awk '{print $1}')
+        remote_hash=$(pixi run lookup "$metadata" | pixi run yq -r '.md5sum')
+        if [[ "$local_hash" != "$remote_hash" ]]; then
+            # the file has changed, delete it and trigger re-download
+            rm -f "$metadata_file"
+        fi
+    fi
     if [[ ! -f "$metadata_file" ]]; then
         pixi run --manifest-path igvf_portal igvf-portal download-file "$metadata" --output "$metadata_file" --igvf-mode "$mode"
     fi
@@ -132,4 +150,5 @@ nextflow run "$repo_dir/main.nf" \
     --slurm_queue "$queue" \
     -profile "$profile" \
     --igvf_mode "$mode" \
-    "${nextflow_args[@]}"
+    --igvf_dry_run "$igvf_dry_run" \
+    "${@}"

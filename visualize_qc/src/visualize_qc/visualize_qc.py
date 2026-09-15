@@ -1,4 +1,3 @@
-from imaplib import IMAP4_stream, IMAP4_SSL
 import dataclasses
 import logging
 import re

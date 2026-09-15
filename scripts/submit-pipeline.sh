@@ -14,11 +14,11 @@ time_limit="1-00:00:00"
 cpus=2
 mem="8G"
 log_dir="$HOME/logs"
-dry_run=false
 queue="owners"
 profile="$(scripts/get-default-profile.sh)"
 workspace="$(scripts/get-default-workspace.sh)"
 mode="prod"
+dry_run_arg="--dry-run"
 
 function usage {
     cat << EOF
@@ -39,12 +39,13 @@ ARGS:
     -C|--cpus: CPUs for the head process. Default: $cpus
     -M|--mem: Memory for the head process. Default: $mem
     -l|--log-dir: Where to write the head process log. Default: $log_dir
-    -n|--dry-run: Print the sbatch script instead of submitting it.
     -p|--profile: Use comma-separated nextflow profiles. Defaults to inferred from environment ($profile)
     -q|--queue: SLURM, use this slurm queue. Default: $queue
     -w|--workspace: Where to output files. Defaults to inferred from environment ($workspace)
     -a|--principal-analysis: Specify the accession of the principal analysis set
     -m|--mode: Specify IGVF server: "prod", "staging", or "sandbox" ($mode)
+    --dry-run/--no-dry-run: Turn on/off igvf_dry_run. With dry-run *on* no changes to the IGVF portal are made.
+      With dry-run *off* records are posted/patched and files are uploaded. Default: $dry_run_arg
 EOF
 }
 
@@ -78,14 +79,6 @@ while [[ "$#" -ge 1 ]]; do
             log_dir="$2"
             shift 2
             ;;
-        "--dry-run")
-            dry_run="true"
-            shift 1
-            ;;
-        "--no-dry-run")
-            dry_run="false"
-            shift 1
-            ;;
         "-p" | "--profile")
             profile="$2"
             shift 2
@@ -114,6 +107,10 @@ while [[ "$#" -ge 1 ]]; do
             esac
             shift 2
             ;;
+        "--dry-run"|"--no-dry-run")
+            dry_run_arg="$1"
+            shift 1
+            ;;
         --)
             shift 1
             break
@@ -130,7 +127,6 @@ done
 
 metadata="${1:-"$repo_dir/test_metadata.tsv"}"
 shift 1
-nextflow_args="${*}"
 if [[ "$metadata" =~ \.tsv(\.gz)?$ ]]; then
     metadata_file="$metadata"
     # ensure we have the principal analysis accession
@@ -159,7 +155,7 @@ else
     fi
 fi
 
-run_args=("--profile" "$profile" "--workspace" "$workspace" "--queue" "$queue" "--principal-analysis" "$principal_analysis" "--mode" "$mode" "--" "$metadata" "${nextflow_args[*]}")
+run_args=("--profile" "$profile" "--workspace" "$workspace" "--queue" "$queue" "--principal-analysis" "$principal_analysis" "--mode" "$mode" "$dry_run_arg" "--" "$metadata" "${@}")
 run_args_quoted=$(printf '%q ' "${run_args[@]}")
 
 job_name=igvf-pseudobulk/$principal_analysis
@@ -199,11 +195,6 @@ export NXF_OPTS='-Xms512m -Xmx6g'
 pixi run pipeline $run_args_quoted
 EOF
 )
-
-if [[ "$dry_run" == "true" ]]; then
-    echo "$sbatch_script"
-    exit 0
-fi
 
 job_id=$(printf '%s\n' "$sbatch_script" | sbatch --parsable)
 

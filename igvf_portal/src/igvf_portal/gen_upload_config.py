@@ -6,18 +6,18 @@ from collections.abc import (
     Mapping,
 )
 from functools import cached_property
-from logging import Logger
 from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
 from igvf_portal import VERSION, utils
+from igvf_portal.connection import PConnection
 from igvf_portal.enums import (
     AnalysisStep,
     ContentType,
     OutputCategory,
 )
-from igvf_portal.igvf_lookup import IgvfLookup
+from igvf_portal.parallel_logger import ParallelLogger
 from igvf_portal.types import (
     AccessionId,
     Alias,
@@ -35,7 +35,7 @@ class GenUploadConfig:
 
     basedir: Path
     input_file_sets: str | None
-    igvf_lookup: IgvfLookup
+    connection: PConnection
     compute_md5: bool = True
     dry_run: bool = True
     lab: PortalId = PortalId("/labs/anshul-kundaje/")
@@ -44,10 +44,10 @@ class GenUploadConfig:
     alias_prefix: str = "anshul-kundaje"
     metadata_path: Path | None = None
     annotations_path: Path | None = None
-    logger: Logger
-    _content_accessions: dict[tuple[AccessionId, ContentType], set[AccessionId]] = (
-        dataclasses.field(default_factory=dict)
-    )
+    logger: ParallelLogger
+    _content_accessions: dict[
+        tuple[AccessionId | PortalId, ContentType], set[AccessionId]
+    ] = dataclasses.field(default_factory=dict)
     step_1_aliases: defaultdict[Alias, list[Alias]] = dataclasses.field(
         default_factory=lambda: defaultdict(list)
     )
@@ -60,7 +60,7 @@ class GenUploadConfig:
 
     def lookup_record(self, key: Alias | AccessionId | PortalId) -> IgvfRecord:
         """Convenience method to lookup record within GenUploadConfig."""
-        return self.igvf_lookup.lookup_record(key)
+        return self.connection.lookup_record(key)
 
     def _lookup_analysis_step_version(self, analysis_step: AnalysisStep) -> PortalId:
         """Get aliases for the requested AnalysisStepVersion."""
@@ -129,7 +129,9 @@ class GenUploadConfig:
         return annotations
 
     def _lookup_content_accessions(
-        self, analysis_set_accession: AccessionId, content_type: ContentType
+        self,
+        analysis_set_accession: AccessionId | PortalId,
+        content_type: ContentType,
     ) -> set[AccessionId]:
         """Query portal for all input files to specified analysis set of specified ContentType.
 
@@ -221,7 +223,10 @@ class GenUploadConfig:
 
     def _lookup_aligned_refs(self, accession: AccessionId) -> list[PortalId]:
         """Given the accession ID of an aligned file (e.g. matrix or fragments file) get reference files."""
-        return self.lookup_record(accession)["reference_files"]
+        return [
+            rec if isinstance(rec, str) else rec["@id"]
+            for rec in self.lookup_record(accession)["reference_files"]
+        ]
 
     @cached_property
     def reference_ids(self) -> set[PortalId]:
@@ -239,13 +244,13 @@ class GenUploadConfig:
         return ",".join(self.reference_ids)
 
     @cached_property
-    def assembly(self) -> str:
+    def assemblies(self) -> tuple[str, ...]:
         """Lookup assembly used in principal analyses."""
         assemblies = {
-            self.lookup_record(Alias(reference_file))["assembly"]
+            self.lookup_record(reference_file)["assembly"]
             for reference_file in self.reference_ids
         }
-        return ",".join(sorted(assemblies))
+        return tuple(sorted(assemblies))
 
     @cached_property
     def controlled_access(self) -> bool:
@@ -468,7 +473,7 @@ class GenUploadConfig:
                 for input_accession in self.input_accessions
             }
         )
-        return self.igvf_lookup.infer_principal_accessions(intermediate_accessions)
+        return self.connection.infer_principal_accessions(intermediate_accessions)
 
     def get_annotations_row(self, pseudobulk_path: Path) -> AnnotationRow:
         """Extract cell_name and subsample from the pseudobulk folder and cell-name-to-annotations TSV."""
