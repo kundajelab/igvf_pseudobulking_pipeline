@@ -13,6 +13,8 @@ from pseudobulk.types import (
 
 @dataclasses.dataclass(slots=True, kw_only=True)
 class Fragment:
+    """A line of a fragments file: an ATAC-seq fragment of a barcode, and its number of reads."""
+
     contig: Contig
     start: POS_DTYPE.type
     end: POS_DTYPE.type
@@ -20,16 +22,18 @@ class Fragment:
     num_reads: int
 
     def __str__(self) -> str:
+        """Format as a line of a fragments file."""
         return f"{self.contig}\t{self.start}\t{self.end}\t{self.barcode_sample}\t{self.num_reads}\n"
 
     @classmethod
-    def from_line(cls, fragment_line: str) -> "Fragment":
+    def from_line(cls, fragment_line: str) -> Fragment:
+        """Parse a line of a fragments file."""
         chro, start, end, barcode_sample, reads = fragment_line.strip().split("\t")
         # str.split builds a fresh object for every field, so without interning each Fragment holds
         # its own private copy of a contig and a barcode even though a whole file only ever draws
         # them from a few thousand distinct values. Sharing one object per value measures as ~346 ->
-        # ~197 bytes of retained heap per Fragment, which matters because split_fragments holds every
-        # fragment until all the pseudobulks have been collected.
+        # ~197 bytes of retained heap per Fragment, which matters because split_fragments holds
+        # every fragment until all the pseudobulks have been collected.
         return cls(
             contig=Contig(sys.intern(chro)),
             start=POS_DTYPE.type(start),
@@ -39,20 +43,24 @@ class Fragment:
         )
 
     @classmethod
-    def from_file(cls, fragments_file: Path) -> Iterator["Fragment"]:
+    def from_file(cls, fragments_file: Path) -> Iterator[Fragment]:
+        """Iterate over the fragments in a fragments file, which may be gzipped."""
         opener = gzip.open if fragments_file.suffix == ".gz" else open
         with opener(f"{fragments_file}", "rt") as fragments_in:
             for line in fragments_in:
                 yield cls.from_line(line)
 
     @property
-    def shifted(self) -> "Fragment":
+    def shifted(self) -> Fragment:
+        """This fragment with both ends moved 4 bp inwards, for the Tn5 insertion offset."""
         return dataclasses.replace(self, start=self.start + 4, end=self.end - 4)
 
     @property
-    def start_point(self) -> "Fragment":
+    def start_point(self) -> Fragment:
+        """The 1 bp interval at the start of this fragment."""
         return dataclasses.replace(self, start=self.start, end=self.start + 1)
 
     @property
-    def end_point(self) -> "Fragment":
+    def end_point(self) -> Fragment:
+        """The 1 bp interval at the end of this fragment."""
         return dataclasses.replace(self, start=self.end - 1, end=self.end)

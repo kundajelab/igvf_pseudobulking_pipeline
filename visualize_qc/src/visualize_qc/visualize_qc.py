@@ -1,6 +1,7 @@
-from imaplib import IMAP4_stream, IMAP4_SSL
 import dataclasses
+import html
 import logging
+import math
 import re
 from collections.abc import (
     Iterable,
@@ -15,10 +16,10 @@ from typing import (
 )
 
 import numpy as np
-import plotly
 import plotly.basedatatypes
 import plotly.graph_objects as go
 import plotly.io as pio
+import plotly.offline
 import polars as pl
 from plotly import subplots
 from plotly.graph_objs import Figure
@@ -86,10 +87,8 @@ class DataScales:
     iqr: int | float
 
     @classmethod
-    def from_data(
-        cls, data: pl.Series, logger: logging.Logger | None = None
-    ) -> DataScales:
-        """Produce DataScales from a pandas Series."""
+    def from_data(cls, data: pl.Series, logger: logging.Logger | None = None) -> DataScales:
+        """Produce DataScales from a polars Series."""
         quartile_1: float | int
         median: float | int
         quartile_3: float | int
@@ -105,9 +104,7 @@ class DataScales:
             finite_data = data.filter(data.is_finite())
             num_finite = len(finite_data)
             if num_finite < num_data and logger is not None:
-                logger.warning(
-                    f"Found {num_data - num_finite} non-finite values in {data.name}"
-                )
+                logger.warning(f"Found {num_data - num_finite} non-finite values in {data.name}")
             if finite_data.is_empty():
                 quartile_1, median, quartile_3 = data.quantile([0.25, 0.5, 0.75])  # ty: ignore[invalid-assignment]
                 iqr, min_finite_val, max_finite_val = nan, nan, nan
@@ -135,7 +132,7 @@ class DataScales:
 
     @property
     def low(self) -> int | float:
-        """Return the high value of the data range."""
+        """Return the low value of the data range."""
         return max(self.min_val, self.quartile_1 - 1.5 * self.iqr)
 
 
@@ -147,7 +144,23 @@ def _fmt_text(val: float) -> str:
         if np.isfinite(val)
         else ("nan" if np.isnan(val) else "inf" if np.isposinf(val) else "-inf")
     )
-    return norm_style if len(norm_style) < len(exp_style) else exp_style
+    text = norm_style if len(norm_style) < len(exp_style) else exp_style
+    # NOTE: a tiny non-zero value would display as "0.000", which reads as exactly zero
+    match text:
+        case "0.000":
+            return "<1e-3"
+        case "-0.000":
+            return ">-1e-3"
+        case _:
+            return text
+
+
+def _strip_trailing_zeros(text: str) -> str:
+    """Strip trailing zeros from the mantissa of a formatted number, e.g. "1.50e+9" -> "1.5e+9"."""
+    mantissa, exp_sep, exponent = text.partition("e")
+    if "." in mantissa:
+        mantissa = mantissa.rstrip("0").rstrip(".")
+    return f"{mantissa}{exp_sep}{exponent}"
 
 
 @dataclasses.dataclass
@@ -207,7 +220,7 @@ class ScaleInfo:
         """Convert unscaled value to symlog. Class method assumes log_scale is not None."""
         abs_val = abs(val)
         return (
-            val
+            float(val)
             if abs_val < log_scale
             else np.sign(val)
             * (log_scale + np.log1p((abs_val - log_scale) / cls.ln_10) / cls.ln_10)
@@ -232,10 +245,13 @@ class ScaleInfo:
         """Convert symlog value to unscaled if log_scale is not None."""
         return val if self.log_scale is None else self._inv_scale(val, self.log_scale)
 
-    @property
-    def type(self) -> str:
-        """Return plotly scale type: "-" for linear, "log" for symlog."""
-        return "-" if self.log_scale is None else "log"
+    def plot_position(self, val: float) -> float:
+        """Convert a value to its y-position on the plot, drawing infinities at the range edges."""
+        if np.isposinf(val):
+            return self.transformed_range[1]
+        if np.isneginf(val):
+            return self.transformed_range[0]
+        return self.scale(val)
 
     @property
     def tickmode(self) -> str:
@@ -249,7 +265,7 @@ class ScaleInfo:
             return -1.0, -1.0
         else:
             delta = self.max_val - self.min_val
-            bottom = self.min_val - delta / 2 if self.has_plus_inf else self.min_val
+            bottom = self.min_val - delta / 2 if self.has_minus_inf else self.min_val
             top = self.max_val + delta / 2 if self.has_plus_inf else self.max_val
             return bottom, top
 
@@ -262,58 +278,75 @@ class ScaleInfo:
             bottom, top = self.range
             return self.scale(bottom), self.scale(top)
 
+    def _symlog_ticks(self) -> list[float]:
+        """Return the unscaled tick values for the symlog scale.
+
+        Greedily take round numbers (0, then powers of 10, then 2 and 5 times powers of 10) that
+        are in range and not too close to the ticks already taken. If that leaves fewer than two
+        ticks, use the ends of the range.
+        """
+        bottom, top = self.range
+        scaled_bottom, scaled_top = self.transformed_range
+        min_gap = (scaled_top - scaled_bottom) / (2 * self.num_ticks)
+        max_exponent = math.ceil(math.log10(max(abs(bottom), abs(top), 1e-3)))
+        # NOTE: smaller values than 1e-3 are formatted as "<1e-3"
+        candidates = [0.0] + [
+            sign * mantissa * 10.0**exponent
+            for mantissa in (1, 2, 5)
+            for exponent in range(max_exponent, -4, -1)
+            for sign in (1, -1)
+        ]
+        ticks: list[float] = []
+        for val in candidates:
+            if bottom <= val <= top and all(
+                abs(self.scale(val) - self.scale(tick)) >= min_gap for tick in ticks
+            ):
+                ticks.append(val)
+        return sorted(ticks) if len(ticks) >= 2 else [bottom, top]
+
     @property
     def ticktext(self) -> list[str] | None:
         """Return tick text labels for symlog scale, or None for linear scale."""
         if self.log_scale is None:
             return None
-        min_scaled_val, max_scaled_val = self.transformed_range
-        # get the untransformed tick values that correspond to even divisions in the transformed space,
-        # rounded to appropriate precision
-        return [
-            _fmt_text(self.inv_scale(transformed_tick))
-            for transformed_tick in np.linspace(
-                min_scaled_val, max_scaled_val, self.num_ticks
-            )
-        ]
+        return [_strip_trailing_zeros(_fmt_text(val)) for val in self._symlog_ticks()]
 
     @property
     def tickvals(self) -> list[float] | None:
-        """Return tick values for symlog scale, or None for linear scale."""
-        tick_labels = self.ticktext
-        return (
-            None
-            if tick_labels is None
-            else [self.scale(float(label)) for label in tick_labels]
-        )
+        """Return tick positions for symlog scale, or None for linear scale."""
+        if self.log_scale is None:
+            return None
+        return [self.scale(val) for val in self._symlog_ticks()]
 
 
-def _visualize_table(table_lazy: pl.LazyFrame, title: str) -> str:
+def _visualize_table(table_lazy: pl.LazyFrame) -> str:
     """Create a pure HTML table figure from a DataFrame."""
     table = table_lazy.collect(engine="streaming")
 
     styled = (
         table.to_pandas()
         .style.hide(axis="index")
-        .set_table_attributes(
-            'style="border-collapse: collapse; border: 1px solid black;"'
-        )
+        .set_table_attributes('style="border-collapse: collapse; border: 1px solid black;"')
         .set_table_styles(
             [
                 # Bold the 1st row (header)
                 {
                     "selector": "thead th",
-                    "props": "font-weight: bold; font-color: line-color: darkslategray; background-color: Lavender; border: 1px solid black;",
+                    "props": (
+                        "font-weight: bold; background-color: Lavender; border: 1px solid black;"
+                    ),
                 },
                 # Bold the 1st column (index)
                 {
                     "selector": "tbody td:first-child",
-                    "props": "font-weight: bold; line-color: darkslategray; background-color: Lavender; border: 1px solid black;",
+                    "props": (
+                        "font-weight: bold; background-color: Lavender; border: 1px solid black;"
+                    ),
                 },
                 # General cell styling
                 {
                     "selector": "td",
-                    "props": "line_color: darkslategray; background-color: lightcyan; border: 1px solid black;",
+                    "props": "background-color: lightcyan; border: 1px solid black;",
                 },
             ]
         )
@@ -325,13 +358,11 @@ def _visualize_table(table_lazy: pl.LazyFrame, title: str) -> str:
 def _visualize_table_csv(
     path: Path,
     exclude_cols: set[str],
-    title: str | None = None,
     schema: pl.Schema | None = None,
-) -> go.Figure | str:
-    """Read CSV file and create a Plotly table figure from it."""
+) -> str:
+    """Read CSV file and create a pure HTML table figure from it."""
     table_df = scan_csv(path, exclude_cols=exclude_cols, schema=schema)
-    title = path.name if title is None else title
-    return _visualize_table(table_df, title=title)
+    return _visualize_table(table_df)
 
 
 def _get_outliers(
@@ -341,30 +372,45 @@ def _get_outliers(
     high: float,
     scale_info: ScaleInfo,
     max_outliers: int,
-) -> tuple[pl.Series, pl.Series]:
+) -> tuple[pl.Series, pl.Series, pl.Series]:
+    """Find the outliers of property values, and their positions on the plot.
+
+    Args:
+        property_values: y-values of data to extract outliers from.
+        index: x-values corresponding to the property values.
+        low: threshold below which a point is an outlier.
+        high: threshold above which a point is an outlier.
+        scale_info: object that provides a transform to sym-log scale if needed.
+        max_outliers: maximum number of outliers to return. If there are more than this, return an
+            even sampling of the outliers (by quantile).
+
+    Returns:
+        outlier_positions: y-positions of the outliers on the (possibly sym-log) plot, with
+            infinite values drawn at the edges of the plot range.
+        outliers: unscaled y-values of the outliers.
+        index_outliers: corresponding x-values of outliers.
+    """
     is_outlier = (property_values > high) | (property_values < low)
     outliers = property_values.filter(is_outlier)
     index = index.filter(is_outlier)
 
+    if len(outliers) > max_outliers:
+        # get filter_idx, the indices that get even spacing of the y-values in quantile-space
+        idx = np.round(np.linspace(0, len(outliers) - 1, max_outliers)).astype(np.uint64)
+        filter_idx = outliers.arg_sort().gather(idx)
+        outliers = outliers.gather(filter_idx)
+        index = index.gather(filter_idx)
     if len(outliers) == 0:
-        return outliers, index
-    else:
-        dtype = outliers.dtype if scale_info.log_scale is None else pl.Float64
-        if len(outliers) > max_outliers:
-            idx = np.round(np.linspace(0, len(outliers) - 1, max_outliers)).astype(
-                np.uint64
-            )
-            filter_idx = outliers.arg_sort().gather(idx)
-            return outliers.gather(filter_idx).map_elements(
-                scale_info.scale, return_dtype=dtype
-            ), index.gather(filter_idx)
-        else:
-            return outliers.map_elements(scale_info.scale, return_dtype=dtype), index
+        return outliers, outliers, index
+    dtype = outliers.dtype if scale_info.log_scale is None else pl.Float64
+    return outliers.map_elements(scale_info.plot_position, return_dtype=dtype), outliers, index
 
 
-def _drop_null(
-    property_values: pl.Series, index: pl.Series
-) -> tuple[pl.Series, pl.Series]:
+def _drop_null(property_values: pl.Series, index: pl.Series) -> tuple[pl.Series, pl.Series]:
+    """Drop missing property values (null or NaN) and the corresponding index values."""
+    if property_values.dtype.is_float():
+        # NOTE: polars treats NaN as larger than every number, so NaN would plot as an outlier
+        property_values = property_values.fill_nan(None)
     mask = property_values.is_not_null()
     return property_values.filter(mask), index.filter(mask)
 
@@ -382,7 +428,7 @@ def _visualize_numeric(
     high = data_scales.high
     low = data_scales.low
 
-    outliers, outliers_index = _get_outliers(
+    outlier_positions, outliers, outliers_index = _get_outliers(
         property_values,
         index,
         low=low,
@@ -442,15 +488,17 @@ def _visualize_numeric(
     # draw outliers as scatter points
     outlier_trace = go.Scattergl(
         x=[0] * len(outliers),
-        y=outliers,
+        y=outlier_positions,
         mode="markers",
         marker={
             "size": 3,
             "color": "rgba(90, 90, 90, 0.4)",  # Subtle translucent grey dots
             "line": {"width": 0},
         },
-        hoverinfo="text",
+        # NOTE: clicking a point copies its hovertext, so keep the value out of the hovertext
         hovertext=outliers_index,
+        customdata=[_fmt_text(val) for val in outliers],
+        hovertemplate="%{hovertext}<br>%{customdata}<extra></extra>",
         showlegend=False,
     )
 
@@ -461,10 +509,9 @@ def _visualize_categorical(
     property_values: pl.Series,
 ) -> tuple[ScaleInfo, Iterable[plotly.basedatatypes.BaseTraceType]]:
     """Visualize categorical property values as a bar chart of percentages."""
-    scale_info = ScaleInfo(
-        min_val=0.0, max_val=100.0, log_scale=None, show_x_tick_labels=True
-    )
-    value_counts = property_values.drop_nulls().value_counts()
+    scale_info = ScaleInfo(min_val=0.0, max_val=100.0, log_scale=None, show_x_tick_labels=True)
+    # sort, because value_counts does not keep the categories in a consistent order
+    value_counts = property_values.drop_nulls().value_counts().sort(property_values.name)
 
     bar_trace = go.Bar(
         x=value_counts[property_values.name],
@@ -485,7 +532,6 @@ def _visualize_qc(
     max_outliers: int = 5,
 ) -> go.Figure:
     """Visualize QC DataFrame as a grid of subplots, one for each column."""
-
     num_subplots = len(qc_df.collect_schema())
     num_rows = (num_subplots + max_cols_per_row - 1) // max_cols_per_row
     num_cols = min(num_subplots, max_cols_per_row)
@@ -498,10 +544,10 @@ def _visualize_qc(
         vertical_spacing=0.2,
     )
 
-    for plot_idx, col in enumerate(qc_df.collect_schema().names()):
+    for plot_idx, col_name in enumerate(qc_df.collect_schema().names()):
         try:
-            logger.debug(f"  plotting {col}")
-            property_values = qc_df.select(col).collect(engine="streaming")[col]
+            logger.debug(f"  plotting {col_name}")
+            property_values = qc_df.select(col_name).collect(engine="streaming")[col_name]
 
             if property_values.dtype.is_numeric():
                 scale_info, traces = _visualize_numeric(
@@ -534,7 +580,7 @@ def _visualize_qc(
                 title_text=property_values.name,
             )
         except Exception as exception:
-            raise RuntimeError(f"Error plotting {col} in {title}") from exception
+            raise RuntimeError(f"Error plotting {col_name} in {title}") from exception
 
     # Set layout for whole figure with all subplots
     fig.update_layout(
@@ -559,9 +605,7 @@ def _visualize_qc_csv(
     max_cols_per_row: int = 6,
 ) -> go.Figure:
     """Read CSV file and visualize QC DataFrame as a grid of subplots."""
-    qc_df, index = scan_csv(
-        path, exclude_cols=exclude_cols, index_col=index_col, schema=schema
-    )
+    qc_df, index = scan_csv(path, exclude_cols=exclude_cols, index_col=index_col, schema=schema)
     title = path.name.split(".", 1)[0] if title is None else title
     return _visualize_qc(
         qc_df=qc_df,
@@ -586,11 +630,10 @@ def _visualize_summary_qc(
     """Visualize summary QC by concatenating dataframes from multiple CSV files."""
     lazy_dfs, indices = zip(
         *(
-            scan_csv(
-                path, exclude_cols=exclude_cols, index_col=index_col, schema=schema
-            )
+            scan_csv(path, exclude_cols=exclude_cols, index_col=index_col, schema=schema)
             for path in paths
-        )
+        ),
+        strict=True,
     )
     qc_df = pl.concat(lazy_dfs, how="diagonal_relaxed")
     index = pl.concat(indices, how="vertical")
@@ -643,23 +686,29 @@ def scan_csv(
                     f"Could not infer separator for file {path} with suffix {path.suffix}. Please "
                     "specify separator with 'sep' argument."
                 )
-    df_lazy = pl.scan_csv(path, separator=sep, infer_schema=False, schema=schema)
-    schema = df_lazy.collect_schema()
+    # NOTE: pl.scan_csv applies "schema" by position, but the column order of QC files can vary
+    # (e.g. ATAC-only accession QC puts the ATAC columns before the RNA columns), so apply the
+    # dtypes by name with "schema_overrides", then check the columns and put them in schema order.
+    df_lazy = pl.scan_csv(path, separator=sep, infer_schema=False, schema_overrides=schema)
+    file_schema = df_lazy.collect_schema()
+    if schema is not None:
+        missing_cols = [col for col in schema if col not in file_schema]
+        extra_cols = [col for col in file_schema if col not in schema]
+        if missing_cols or extra_cols:
+            raise ValueError(
+                f"Columns of {path} do not match the expected schema. Missing columns: "
+                f"{missing_cols}, unexpected columns: {extra_cols}"
+            )
+        df_lazy = df_lazy.select(schema.names())
+    drop_cols = set() if exclude_cols is None else set(exclude_cols)
     if index_col is None:
-        return (
-            df_lazy
-            if exclude_cols is None
-            else df_lazy.drop(exclude_cols.intersection(schema))
-        )
+        return df_lazy.drop(drop_cols.intersection(file_schema))
     else:
-        if index_col not in schema:
+        if index_col not in file_schema:
             raise ValueError(f"Invalid index column: {index_col}")
         index = df_lazy.select(index_col).collect(engine="streaming")[index_col]
-        if exclude_cols is None:
-            exclude_cols = {index_col}
-        else:
-            exclude_cols.add(index_col)
-        df_lazy = df_lazy.drop(exclude_cols.intersection(schema))
+        drop_cols.add(index_col)
+        df_lazy = df_lazy.drop(drop_cols.intersection(file_schema))
         return df_lazy, index
 
 
@@ -673,30 +722,29 @@ def _is_csv_or_tsv(path: Path) -> bool:
     return _CSV_OR_TSV_PATTERN.search(path.name) is not None
 
 
-def _find_qc_files(
-    input_paths: Iterable[Path], filter_glob: str = "*"
-) -> Iterator[Path]:
+def _find_qc_files(input_paths: Iterable[Path], filter_glob: str = "*") -> Iterator[Path]:
     """Yield paths of CSV/TSV files matching the filter glob from the input paths."""
     for input_path in input_paths:
         if input_path.is_file():
             if fnmatch(f"{input_path}", filter_glob):
                 yield input_path
         else:
-            for filtered_path in input_path.glob(filter_glob):
+            # sort so the order of the report does not depend on the file system
+            for filtered_path in sorted(input_path.glob(filter_glob)):
                 if _is_csv_or_tsv(filtered_path):
                     yield filtered_path
 
 
-def _get_master_template(
-    dropdown_options_html: list[str], figures_grid_html: list[str]
-) -> str:
+def _get_master_template(dropdown_options_html: list[str], figures_grid_html: list[str]) -> str:
     """Return the master HTML template for the QC dashboard."""
+    # Embed plotly.js once here (the figures are written without it) so the report is self-contained
+    plotly_js = plotly.offline.get_plotlyjs()
     # Double the outer brackets to properly escape them inside the Python f-string
     return f"""<!DOCTYPE html>
     <html>
     <head>
         <title>QC Dashboard</title>
-        <script src="https://plot.ly"></script>
+        <script type="text/javascript">{plotly_js}</script>
         <style>
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -755,7 +803,9 @@ def _get_master_template(
         <div id="toast-notification">Copied to Clipboard!</div>
 
         <div class="header-controls">
-            <label for="figure-selector" style="font-weight: bold; margin-right: 10px;">Select Visual Analysis:</label>
+            <label for="figure-selector" style="font-weight: bold; margin-right: 10px;">
+                Select Visual Analysis:
+            </label>
             <select id="figure-selector" onchange="switchFigure()">
                 {"".join(dropdown_options_html)}
             </select>
@@ -817,7 +867,8 @@ def _get_master_template(
                     if (!data || !data.points || data.points.length === 0) return;
                     const point = data.points[0];
                     if (point.text !== undefined && point.text !== '') {{
-                        copyTextToClipboard(point.text);
+                        // the box summary uses <br> for line breaks in the hover text
+                        copyTextToClipboard(point.text.replace(/<br>/g, '\\n').trim());
                     }} else if (point.hovertext !== undefined && point.hovertext !== '') {{
                         copyTextToClipboard(point.hovertext);
                     }}
@@ -827,10 +878,6 @@ def _get_master_template(
         </script>
     </body>
     </html>"""
-
-
-# Ensure CDN is used to extract clean, minimal script snippets without bloated engine duplication
-pio.renderers.default = "browser"
 
 
 def _add_figure(
@@ -843,9 +890,7 @@ def _add_figure(
     # 2. Extract ONLY the necessary raw <div> components of this individual chart
     # setting full_html=False drops the repetitive <html> headers, keeping file footprint tiny
     fig_div = (
-        fig
-        if isinstance(fig, str)
-        else pio.to_html(fig, full_html=False, include_plotlyjs="none")
+        fig if isinstance(fig, str) else pio.to_html(fig, full_html=False, include_plotlyjs=False)
     )
     title_text = (
         title
@@ -860,14 +905,15 @@ def _add_figure(
     index = len(dropdown_options_html)
     selected_attr = "selected" if index == 0 else ""
     dropdown_options_html.append(
-        f'<option value="fig-{index}" {selected_attr}>{title_text}</option>'
+        f'<option value="fig-{index}" {selected_attr}>{html.escape(title_text)}</option>'
     )
 
     # 4. Wrap the graph in an isolated, queryable HTML component container
     # Hide all figures by default except for the very first one
     display_style = "block" if index == 0 else "none"
     figures_grid_html.append(
-        f'<div id="fig-{index}" class="chart-container" style="display: {display_style};">{fig_div}</div>'
+        f'<div id="fig-{index}" class="chart-container" style="display: {display_style};">'
+        f"{fig_div}</div>"
     )
 
 
@@ -901,7 +947,49 @@ def _find_input_qc_files(
     return table_qc_files, accession_qc_files, pseudobulk_qc_files
 
 
+def _add_individual_figures(
+    qc_files: list[Path],
+    qc_type: str,
+    dropdown_options_html: list[str],
+    figures_grid_html: list[str],
+    exclude_cols: set[str],
+    index_col: str,
+    logger: logging.Logger,
+    schema: pl.Schema,
+    max_outliers: int,
+    max_cols_per_row: int,
+) -> None:
+    """Visualize each QC file as its own figure, and add them to the HTML lists.
+
+    Args:
+        qc_files: Paths to the QC files to visualize.
+        qc_type: Type of the QC files (e.g. "accession"), for logging.
+        dropdown_options_html: List of dropdown option HTML to add to.
+        figures_grid_html: List of figure HTML to add to.
+        exclude_cols: Names of columns to exclude from the QC plots.
+        index_col: Name of the index column (will show up as hover text for outliers).
+        logger: Logger to report progress.
+        schema: Expected schema of the QC files.
+        max_outliers: Maximum number of outliers to display in the QC plots.
+        max_cols_per_row: Maximum number of columns per row in the QC plots.
+    """
+    for idx, qc_file in enumerate(qc_files):
+        logger.info(f"Visualizing {qc_type} QC file: {qc_file} ({idx + 1}/{len(qc_files)})")
+        fig = _visualize_qc_csv(
+            qc_file,
+            exclude_cols=exclude_cols,
+            index_col=index_col,
+            logger=logger,
+            schema=schema,
+            max_outliers=max_outliers,
+            max_cols_per_row=max_cols_per_row,
+        )
+        _add_figure(fig, dropdown_options_html, figures_grid_html)
+
+
 class LogLevel(Enum):
+    """Logging levels that can be selected from the command line."""
+
     DEBUG = logging.DEBUG
     INFO = logging.INFO
     WARNING = logging.WARNING
@@ -929,8 +1017,7 @@ def visualize_qc(
     plot_individual_pseudobulks: bool | None = None,
     log_level: LogLevel = LogLevel.INFO,
 ) -> None:
-    """
-    Visualize QC metrics for inputs summary table, accession, and pseudobulk QC files.
+    """Visualize QC metrics for inputs summary table, accession, and pseudobulk QC files.
 
     Writes an interactive HTML report to the output path.
 
@@ -939,18 +1026,23 @@ def visualize_qc(
         table_qc: One or more paths to table QC files
         accession_qc: One or more paths to accession QC files
         pseudobulk_qc: One or more paths to pseudobulk QC files
-        exclude_col: Comma-separatedlist of column names to exclude from visualizing in the QC plots
-        index_col: Name of the index column (will show up as hover text for outliers in the QC plots)
-        max_outliers: Maximum number of outliers to display in the QC plots. More results in more memory usage.
+        exclude_col: Comma-separated list of column names to exclude from visualizing in the QC
+            plots
+        index_col: Name of the index column (will show up as hover text for outliers in the QC
+            plots)
+        max_outliers: Maximum number of outliers to display in the QC plots. More results in more
+            memory usage.
         max_cols_per_row: Maximum number of columns per row in the QC plots.
         plot_accessions_summary: Whether to plot a summary of accession QC metrics.
             If None, will be set to True if there are multiple accession QC files, False otherwise.
         plot_pseudobulks_summary: Whether to plot a summary of pseudobulk QC metrics.
             If None, will be set to True if there are multiple pseudobulk QC files, False otherwise.
         plot_individual_accessions: Whether to plot individual accession QC metrics.
-            If None, will be set to True if there are less than 10 accession QC files, False otherwise.
+            If None, will be set to True if there are less than 10 accession QC files, False
+            otherwise.
         plot_individual_pseudobulks: Whether to plot individual pseudobulk QC metrics.
-            If None, will be set to True if there are less than 10 pseudobulk QC files, False otherwise.
+            If None, will be set to True if there are less than 10 pseudobulk QC files, False
+            otherwise.
         log_level: Logging level to report.
     """
     logging.basicConfig(
@@ -1022,38 +1114,23 @@ def visualize_qc(
         )
         _add_figure(_fig, dropdown_options_html, figures_grid_html)
 
-    if plot_individual_accessions:
-        for idx, input_qc_file in enumerate(accession_qc_files):
-            logger.info(
-                f"Visualizing accession QC file: {input_qc_file} ({idx + 1}/{len(accession_qc_files)})"
-            )
-            _fig = _visualize_qc_csv(
-                input_qc_file,
+    for plot_individual, qc_type, qc_files, schema in (
+        (plot_individual_accessions, "accession", accession_qc_files, ACCESSION_QC_SCHEMA),
+        (plot_individual_pseudobulks, "pseudobulk", pseudobulk_qc_files, PSEUDOBULK_QC_SCHEMA),
+    ):
+        if plot_individual:
+            _add_individual_figures(
+                qc_files,
+                qc_type=qc_type,
+                dropdown_options_html=dropdown_options_html,
+                figures_grid_html=figures_grid_html,
                 exclude_cols=exclude_cols,
                 index_col=index_col,
                 logger=logger,
-                schema=ACCESSION_QC_SCHEMA,
+                schema=schema,
                 max_outliers=max_outliers,
                 max_cols_per_row=max_cols_per_row,
             )
-            _add_figure(_fig, dropdown_options_html, figures_grid_html)
-
-    if plot_individual_pseudobulks:
-        for idx, input_qc_file in enumerate(pseudobulk_qc_files):
-            logger.info(
-                f"Visualizing pseudobulk QC file: {input_qc_file} ({idx + 1}/{len(pseudobulk_qc_files)})"
-            )
-            _fig = _visualize_qc_csv(
-                input_qc_file,
-                exclude_cols=exclude_cols,
-                index_col=index_col,
-                title=input_qc_file.name.split(".", 1)[0],
-                logger=logger,
-                schema=PSEUDOBULK_QC_SCHEMA,
-                max_outliers=max_outliers,
-                max_cols_per_row=max_cols_per_row,
-            )
-            _add_figure(_fig, dropdown_options_html, figures_grid_html)
 
     # Create the Master HTML Dashboard Framework
     master_html_template = _get_master_template(

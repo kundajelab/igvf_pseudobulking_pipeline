@@ -25,10 +25,13 @@ process SORT_FRAGMENTS {
 
     script:
     sorted_fragments_tsv = "${fragments_tsvs[0].getBaseName(2)}.sorted.tsv.gz"
-    sorted_fragments_bigbed = "${fragments_tsvs[0].getBaseName(2)}.bb"
+    sorted_fragments_bigbed = "${fragments_tsvs[0].getBaseName(2)}.fragments.bb"
+    // Cap sort's buffer at half the task's memory, leaving room for the rest of the pipeline. By
+    // default sort sizes it from the node's physical memory, which can exceed the job's limit.
+    sort_buffer_size = "${task.memory.toMega().intdiv(2)}M"
     """
     # sort the concatenated fragment TSVs using bin/sort-bed.sh, then bgzip
-    sort-bed.sh "${chrom_sizes}" "${fragments_tsvs.join('" "')}" \
+    sort-bed.sh --buffer-size "${sort_buffer_size}" "${chrom_sizes}" "${fragments_tsvs.join('" "')}" \
     | bgzip -@ ${task.cpus} -o "${sorted_fragments_tsv}"
 
     if [[ "${publish}" == "true" ]]; then

@@ -4,13 +4,14 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from igvf_portal import utils
+from igvf_portal.connection import PConnection
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import IgvfMode
-from igvf_portal.igvf_lookup import IgvfLookup
 from igvf_portal.types import (
     AccessionId,
     GeneInfoRow,
     IgvfRecord,
+    PortalId,
     TssRow,
 )
 
@@ -18,40 +19,31 @@ _ID_MATCH = re.compile(r'gene_id "([^"]+)"')
 _NAME_MATCH = re.compile(r'gene_name "([^"]+)"')
 
 
-def _get_reference_file_accessions(
-    igvf_lookup: IgvfLookup, file_accessions: Iterable[AccessionId]
-) -> set[AccessionId]:
+def _get_reference_file_ids(
+    connection: PConnection, file_accessions: Iterable[AccessionId]
+) -> set[PortalId]:
     return {
-        AccessionId(reference_file)
+        ref if isinstance(ref, str) else ref["@id"]
         for file_accession in file_accessions
-        for reference_file in igvf_lookup.lookup_record(file_accession)[
-            "reference_files"
-        ]
+        for ref in connection.lookup_record(file_accession, frame="object")["reference_files"]
     }
 
 
 def _get_reference_file_records(
-    igvf_lookup: IgvfLookup, reference_file_accessions: Iterable[AccessionId]
+    connection: PConnection, reference_file_ids: Iterable[PortalId]
 ) -> tuple[IgvfRecord, IgvfRecord]:
+    # content_type, href and s3_uri are all the file's own properties
     reference_file_records = [
-        igvf_lookup.lookup_record(reference_file_accession)
-        for reference_file_accession in reference_file_accessions
+        connection.lookup_record(reference_file_accession, frame="object")
+        for reference_file_accession in reference_file_ids
     ]
-    match [
-        _rec
-        for _rec in reference_file_records
-        if _rec["content_type"] == "genome reference"
-    ]:
+    match [_rec for _rec in reference_file_records if _rec["content_type"] == "genome reference"]:
         case [fasta_reference]:
             pass
         case _ as fasta_references:
-            raise ValueError(
-                f"Expected 1 fasta reference, got: {len(fasta_references)}"
-            )
+            raise ValueError(f"Expected 1 fasta reference, got: {len(fasta_references)}")
     match [
-        _rec
-        for _rec in reference_file_records
-        if _rec["content_type"] == "transcriptome reference"
+        _rec for _rec in reference_file_records if _rec["content_type"] == "transcriptome reference"
     ]:
         case [transcriptome_reference]:
             pass
@@ -114,8 +106,7 @@ def _iter_tss_rows(gtf_path: Path, logger: logging.Logger) -> Iterator[TssRow]:
         )
         if feature == "transcript":
             info_dict = {
-                key: val.strip('"')
-                for key, val in (x.split(" ", 1) for x in info.split("; "))
+                key: val.strip('"') for key, val in (x.split(" ", 1) for x in info.split("; "))
             }
             if strand not in ("+", "-"):
                 raise ValueError(f"Invalid strand: {strand}")
@@ -137,42 +128,35 @@ def get_references(
     gene_info_name: str = "gene_info.csv",
     tss_name: str = "tss.tsv",
 ) -> None:
-    """Download references used by file(s) described by key (comma-separated list of accession ID or alias).
+    """Download the reference FASTA and GTF used by file(s) described by key.
 
-    Form gene_info.csv and tss.tsv.
-
+    Then form gene_info.csv and tss.tsv from the GTF.
 
     Args:
-        metadata_file: Path to annotations file.
+        key: Comma-separated list of alias or accession ID to look for reference file
+            dependencies.
         igvf_mode: Mode for accessing the IGVF Portal.
+        output: If specified, download to that folder and write gene info and TSS files there. If
+            unspecified, use the working folder.
+        chunk_size: Chunk size for streaming download, in bytes.
+        gene_info_name: File name of the gene info CSV to write.
+        tss_name: File name of the TSS TSV to write.
     """
     utils.check_access_keys()
     logger = utils.get_logger_from_file(__file__)
     logger.info(f"Version: {VERSION}")
 
-    igvf_lookup = IgvfLookup.new(igvf_mode=igvf_mode)
+    connection = PConnection.new(igvf_mode=igvf_mode)
     split_keys = {AccessionId(_split_key.strip()) for _split_key in key.split(",")}
-    reference_file_accessions = _get_reference_file_accessions(
-        igvf_lookup=igvf_lookup, file_accessions=split_keys
+    reference_file_accessions = _get_reference_file_ids(
+        connection=connection, file_accessions=split_keys
     )
     fasta_record, gtf_record = _get_reference_file_records(
-        igvf_lookup=igvf_lookup, reference_file_accessions=reference_file_accessions
+        connection=connection, reference_file_ids=reference_file_accessions
     )
 
-    _ = utils.download_record(
-        fasta_record,
-        igvf_mode=igvf_mode,
-        chunk_size=chunk_size,
-        output=output,
-        logger=logger,
-    )
-    gtf_path = utils.download_record(
-        gtf_record,
-        igvf_mode=igvf_mode,
-        chunk_size=chunk_size,
-        output=output,
-        logger=logger,
-    )
+    _ = connection.download_record(fasta_record, chunk_size=chunk_size, output=output)
+    gtf_path = connection.download_record(gtf_record, chunk_size=chunk_size, output=output)
 
     if output is None:
         output = Path(".")
@@ -180,8 +164,13 @@ def get_references(
     # write gene_info CSV
     gene_map_rows_iter = _iter_gene_map(gtf_path=gtf_path, logger=logger)
     utils.write_csv(
-        rows=gene_map_rows_iter, output_csv=output / gene_info_name, logger=logger
+        rows=gene_map_rows_iter,
+        output_csv=output / gene_info_name,
+        row_type=GeneInfoRow,
+        logger=logger,
     )
     # write tss TSV
     tss_rows_iter = _iter_tss_rows(gtf_path=gtf_path, logger=logger)
-    utils.write_csv(rows=tss_rows_iter, output_csv=output / tss_name, logger=logger)
+    utils.write_csv(
+        rows=tss_rows_iter, output_csv=output / tss_name, row_type=TssRow, logger=logger
+    )

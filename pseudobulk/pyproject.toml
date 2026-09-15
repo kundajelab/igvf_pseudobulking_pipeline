@@ -42,9 +42,67 @@ filterwarnings = [
 
 [tool.ruff]
 line-length = 100
+output-format = "full"
+# NOTE: target-version is inferred from project.requires-python
+
+[tool.ruff.lint]
+select = [
+    "A",      # builtin shadowing
+    "ANN",    # missing type annotations (mypy's disallow_untyped_defs/incomplete_defs)
+    "ARG",    # unused arguments
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "C901",   # McCabe complexity
+    "D",      # pydocstyle, google convention (below)
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "LOG",    # flake8-logging
+    "LOG015", # (preview rule) prohibit calls to the root logger
+    "N",      # PEP8 naming
+    "PGH",    # pygrep-hooks: blanket "type: ignore" (mypy's ignore-without-code)
+    "PT",     # pytest style
+    "RUF",    # ruff-specific, including unused noqa comments (RUF100)
+    "SIM",    # simplify
+    "UP",     # pyupgrade, to the target python version
+    "W",      # pycodestyle warnings
+]
+ignore = [
+    "D100", # missing docstring in public module
+    "D104", # missing docstring in public package
+]
+# bugbear fixes can change behavior, so require them to be made by hand
+unfixable = ["B"]
+# NOTE: only preview rules explicitly selected above (e.g. LOG015) are enforced
+preview = true
+explicit-preview-rules = true
+
+[tool.ruff.lint.flake8-annotations]
+# allow **kwargs: Any, for keyword arguments that are passed on to another function
+allow-star-arg-any = true
+
+[tool.ruff.lint.per-file-ignores]
+"test/**.py" = [
+    "D103", # missing docstring in public function: test names describe the test
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ty.rules]
+# mypy's possibly-undefined
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+possibly-missing-import = "error"
+division-by-zero = "error"
+
+[tool.ty.terminal]
+# fail on warnings too, e.g. unused ignore comments and redundant casts (mypy's warn_unused_ignores
+# and warn_redundant_casts)
+error-on-warning = true
 
 [tool.poe.tasks]
-lint = "ruff check --select I --fix ."
+lint = "ruff check --fix ."
 format = "ruff format ."
 types = "ty check ."
 checks = ["lint", "format", "types", "test"]
@@ -54,6 +112,7 @@ shell = "PYTHON_GIL=1 PYTHONWARNINGS=\"ignore:As the c extension couldn't be imp
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
-    "ruff>=0.15.12",
-    "ty>=0.0.37",
+    "ruff==0.16.9",
+    "scipy-stubs>=1.18.1.1",
+    "ty==0.0.84",
 ]

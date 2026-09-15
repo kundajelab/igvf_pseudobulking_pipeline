@@ -3,8 +3,10 @@ import signal
 import unicodedata
 from collections import defaultdict
 from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
     Hashable,
-    Iterable,
     Mapping,
     Sequence,
 )
@@ -12,15 +14,13 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from logging import Logger
 from pathlib import Path
-from threading import Lock
 from types import MappingProxyType
 from typing import (
-    Callable,
+    Any,
     Final,
-    Generator,
     Literal,
     TextIO,
-    TypeAlias,
+    cast,
     overload,
 )
 
@@ -29,9 +29,7 @@ import pandas as pd
 import scipy.sparse
 
 from pseudobulk.barcode_qc import BarcodeQc
-from pseudobulk.tss import update_insertions_range
 from pseudobulk.types import (
-    COUNTS_ARRAY,
     COUNTS_MATRIX,
     POS_ARRAY,
     POS_DTYPE,
@@ -40,7 +38,7 @@ from pseudobulk.types import (
     PseudobulkName,
 )
 
-LogLock: TypeAlias = AbstractContextManager[bool]
+type LogLock = AbstractContextManager[bool]
 """A lock used to keep log messages from interleaving.
 
 Tools that parallelize with processes rather than threads must supply a multiprocessing lock, since
@@ -74,15 +72,26 @@ RNA_QC_COLUMNS: Final[tuple[str, ...]] = (
 )
 """Expected columns in RNA QC files."""
 
-FRONT_QC_COLUMNS: Final[tuple[str, ...]] = (
-    "analysis_set_accession",
-    "barcode_sample",
-    "annotated",
-    "found_in_rna",
-    "found_in_atac",
-    "pseudobulk_id",
+FRONT_QC_COLUMNS: Final[tuple[str, ...]] = tuple(
+    # NOTE: dict.fromkeys drops the repeated columns, keeping the first of each
+    dict.fromkeys(
+        (
+            "analysis_set_accession",
+            "barcode_sample",
+            "annotated",
+            "found_in_rna",
+            "found_in_atac",
+            "pseudobulk_id",
+            *ATAC_QC_COLUMNS,
+            *RNA_QC_COLUMNS,
+        )
+    )
 )
-"""Columns that should come first in combined RNA + ATAC QC."""
+"""Columns that should come first in combined RNA + ATAC QC, in order.
+
+The shared columns come first, then the ATAC QC columns, then the RNA QC columns, so that the order
+of the columns is the same whether or not either QC is present.
+"""
 
 MANDATORY_METADATA_COLS: Final[tuple[str, ...]] = (
     "barcode_sample",
@@ -108,6 +117,14 @@ ADDED_METADATA_COLS: Final[dict[str, tuple[str, ...]]] = {
     "pseudobulk_id": ("cell_name", "subsample"),
 }
 """Usedful derived columns that are not in the raw annotations file, and their raw dependencies."""
+
+_TEXT_METADATA_COLS: Final[tuple[str, ...]] = (
+    "barcode_sample",
+    "cell_name",
+    "subsample",
+    "analysis_set_accession",
+)
+"""Metadata columns that always hold text, whatever their values look like."""
 
 METADATA_COLS: Final[tuple[str, ...]] = (
     MANDATORY_METADATA_COLS + OPTIONAL_METADATA_COLS + tuple(ADDED_METADATA_COLS.keys())
@@ -184,6 +201,8 @@ def killed_worker_count(executor: ProcessPoolExecutor, logger: Logger) -> int | 
 
     Args:
         executor: the process pool whose workers died.
+        logger: Logger to report the workers' exit codes with.
+
     Returns:
         The number of workers killed with SIGKILL, or None if the pool does not expose its worker
         processes (it is a private attribute, so treat it as unavailable rather than assuming zero).
@@ -234,8 +253,8 @@ def exit_if_oom_killed(
                 return
             elif oom_kills_after > oom_kills_before:
                 logger.error(
-                    f"the kernel reported {oom_kills_after - oom_kills_before} out-of-memory kill(s) "
-                    "in this cgroup"
+                    f"the kernel reported {oom_kills_after - oom_kills_before} out-of-memory"
+                    " kill(s) in this cgroup"
                 )
                 raise SystemExit(OOM_EXIT_STATUS)
             else:
@@ -243,55 +262,38 @@ def exit_if_oom_killed(
                 return
         case _ as num_killed:
             logger.error(
-                f"{num_killed} worker processes ran out of memory. Exiting with status {OOM_EXIT_STATUS} so "
-                "that the task is retried with more memory."
+                f"{num_killed} worker processes ran out of memory. Exiting with status "
+                f"{OOM_EXIT_STATUS} so that the task is retried with more memory."
             )
             raise SystemExit(OOM_EXIT_STATUS)
 
 
 def load_metadata(
     metadata_loc: Path,
-    wanted_cols: Iterable[str] | None = METADATA_COLS,
+    wanted_cols: Collection[str] | None = METADATA_COLS,
 ) -> pd.DataFrame:
-    """Load metadata file and perform basic checks."""
-    # determine which columns we need to read in
-    if wanted_cols is None:
-        usecols = None
-        added_cols = set()
-    else:
-        usecols = []
-        dependency_cols = set()
-        added_cols = set()
-        available_columns = (
-            read_csv(metadata_loc, nrows=0).columns
-            if len(set(wanted_cols).intersection(OPTIONAL_METADATA_COLS)) > 0
-            else None
-        )
+    """Load metadata file and perform basic checks.
 
-        for col in wanted_cols:
-            col_dependencies = ADDED_METADATA_COLS.get(col, None)
-            if col_dependencies is None:
-                if available_columns is None or col in available_columns:
-                    usecols.append(col)
-            else:
-                added_cols.add(col)
-                dependency_cols.update(col_dependencies)
-        usecols.extend(dependency_cols.difference(usecols))
+    Args:
+        metadata_loc: Path to metadata / cell-annotations file
+        wanted_cols: Iterable of which metadata columns are wanted. Some columns are generated (not
+            in the bare file, and those should also be explicitly selected if desired.)
+    """
+    # determine which columns we need to read in
+    usecols, added_cols = _select_metadata_cols(metadata_loc=metadata_loc, wanted_cols=wanted_cols)
     # read in the TSV
-    df = read_csv(metadata_loc, usecols=usecols)
+    # NOTE: read the identifying columns as text, so that e.g. cell names that are all numbers are
+    # not parsed as numbers
+    df = read_csv(metadata_loc, usecols=usecols, dtype=dict.fromkeys(_TEXT_METADATA_COLS, str))
+    # QC input metadata to ensure it is valid
+    # NOTE: before deriving columns, which needs valid values of the columns they are derived from
+    _check_metadata(df)
     if len(added_cols) > 0:
         # if we need to add any derived cols, add them
         _add_derived_metadata(df, added_cols=added_cols)
     if wanted_cols is not None:
         # drop the source columns that were only read so that the added ones could be derived
         df = df.loc[:, [col for col in wanted_cols if col in df.columns]]
-    # check 'subsample' contains valid values
-    if "subsample" in df.columns:
-        for subsample in df["subsample"].unique():
-            if "-" in subsample:
-                raise ValueError(
-                    f"'subsample' column contained '{subsample}' containing invalid annotation values"
-                )
     # save space by converting repeat values to categoricals
     for col_name, col_values in df.items():
         if col_values.nunique() * 2 < len(col_values):
@@ -299,27 +301,93 @@ def load_metadata(
     return df
 
 
-def sanitize_to_ascii_underscore(text: str) -> str:
-    """Replace unicode characters with similar ascii, replace whitespace and commas with underscores."""
+def _select_metadata_cols(
+    metadata_loc: Path, wanted_cols: Collection[str] | None
+) -> tuple[list[str] | None, set[str]]:
+    """Determine which columns to read in for load_metadata."""
+    if wanted_cols is None:
+        return None, set()
+    usecols = []
+    dependency_cols = set()
+    added_cols = set()
+    available_columns = (
+        read_csv(metadata_loc, nrows=0).columns
+        if len(set(wanted_cols).intersection(OPTIONAL_METADATA_COLS)) > 0
+        else None
+    )
+
+    for col in wanted_cols:
+        col_dependencies = ADDED_METADATA_COLS.get(col, None)
+        if col_dependencies is None:
+            if available_columns is None or col in available_columns:
+                usecols.append(col)
+        else:
+            added_cols.add(col)
+            dependency_cols.update(col_dependencies)
+    usecols.extend(dependency_cols.difference(usecols))
+    return usecols, added_cols
+
+
+def _check_metadata(df: pd.DataFrame) -> None:
+    """QC input metadata to ensure it is valid."""
+    # check that the columns that pseudobulk IDs are made from have a value in every row
+    for column in ("subsample", "cell_name"):
+        if column not in df.columns:
+            continue
+        # NOTE: read_csv reads empty fields as missing, but not fields of only whitespace
+        is_empty = df[column].isna() | (df[column].astype(str).str.strip() == "")
+        if is_empty.any():
+            raise ValueError(
+                f"'{column}' column must not be empty, but is empty on {is_empty.sum()} rows"
+            )
+    # check that each barcode is annotated once
+    # NOTE: this must hold across the whole file, not just within each analysis set, because the
+    # per-cell FRiP of a pseudobulk is computed and merged by barcode alone, across all of its
+    # analysis sets
+    if "barcode_sample" in df.columns:
+        repeated = df["barcode_sample"][df["barcode_sample"].duplicated()].unique()
+        if len(repeated) > 0:
+            examples = ", ".join(f"'{barcode}'" for barcode in repeated[:5])
+            raise ValueError(
+                f"'barcode_sample' column contained {len(repeated)} barcodes on more than one row,"
+                f" e.g. {examples}"
+            )
+
+
+def sanitize_to_ascii_underscore(text: str, *, sanitize_hyphen: bool = True) -> str:
+    """Replace unicode with similar ascii, and periods, commas, slashes, and whitespace with "_".
+
+    Args:
+        text: The text to sanitize.
+        sanitize_hyphen: If True, replace hyphens with "_" too.
+    """
     # 1. Normalize Unicode to NFKD form to separate characters from accents
     # 2. Encode to ASCII and ignore characters that cannot be converted
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more commas or whitespace characters with a single underscore
+    # 4. Replace one or more periods, commas, forward or back slashes, whitespace characters, or
+    #    (optionally) hyphens with a single underscore
     # \s+ matches spaces, tabs, and newlines
-    return re.sub(r"[,\s]+", "_", text)
+    pattern = r"[-.,/\\\s]+" if sanitize_hyphen else r"[.,/\\\s]+"
+    return re.sub(pattern, "_", text)
 
 
-def _get_map_to_sanitized(cell_name: pd.Series) -> dict[str, str]:
+def _get_map_to_sanitized(cell_name: pd.Series, *, sanitize_hyphen: bool = True) -> dict[str, str]:
     """Get a 1-to-1 map from cell_name to safe ascii annotation.
 
     Append indices as needed to guarantee uniqueness.
+
+    Args:
+        cell_name: The names to sanitize.
+        sanitize_hyphen: If True, replace hyphens with "_" too.
     """
     sorted_cell_names = sorted(cell_name.unique())
     reversed_dict = defaultdict(list)
     for cell_name in sorted_cell_names:
-        reversed_dict[sanitize_to_ascii_underscore(cell_name)].append(cell_name)
+        reversed_dict[
+            sanitize_to_ascii_underscore(cell_name, sanitize_hyphen=sanitize_hyphen)
+        ].append(cell_name)
     while any(len(cell_names) > 1 for cell_names in reversed_dict.values()):
         old_reversed_dict, reversed_dict = reversed_dict, defaultdict(list)
         for sanitized_name in sorted(old_reversed_dict.keys()):
@@ -332,12 +400,21 @@ def _get_map_to_sanitized(cell_name: pd.Series) -> dict[str, str]:
     return {cell_names[0]: sanitized_name for sanitized_name, cell_names in reversed_dict.items()}
 
 
-def _add_derived_metadata(metadata_df, added_cols: set[str]) -> None:
-    """
-    Update metadata_df in place with new 'annotation' and 'pseudobulk_id' columns if they are in added_cols
+def _add_derived_metadata(metadata_df: pd.DataFrame, added_cols: set[str]) -> None:
+    """Update metadata_df in place with the derived columns, including 'pseudobulk_id' if wanted.
+
+    Args:
+        metadata_df: metadata DataFrame, with the columns the derived columns depend on.
+        added_cols: The derived columns that are wanted, from ADDED_METADATA_COLS.
     """
     # Cell name to annotation mapping
-    cell_name_to_annotation_dict = _get_map_to_sanitized(metadata_df["cell_name"])
+    # NOTE: hyphens are kept in cell names, as required for backwards-compatibility with already
+    # submitted pseudobulks: their IDs, and so their Portal aliases, are made from the cleaned cell
+    # names. The pseudobulk IDs remain unambiguous, because the subsamples are cleaned of hyphens,
+    # so the last hyphen of an ID always separates the cell name from the subsample.
+    cell_name_to_annotation_dict = _get_map_to_sanitized(
+        metadata_df["cell_name"], sanitize_hyphen=False
+    )
     # Map cell names to annotations in metadata_df
     metadata_df["cleaned_cell_name"] = (
         metadata_df["cell_name"].map(cell_name_to_annotation_dict).astype("category")
@@ -348,8 +425,12 @@ def _add_derived_metadata(metadata_df, added_cols: set[str]) -> None:
         metadata_df["subsample"].map(subsample_dict).astype("category")
     )
     if "pseudobulk_id" in added_cols:
-        metadata_df["pseudobulk_id"] = metadata_df.apply(
-            lambda row: f"{row['cleaned_cell_name']}-{row['cleaned_subsample']}", axis=1
+        # NOTE: concatenate the columns rather than formatting each row with apply, which takes
+        # ~10x as long
+        metadata_df["pseudobulk_id"] = (
+            metadata_df["cleaned_cell_name"].astype(str)
+            + "-"
+            + metadata_df["cleaned_subsample"].astype(str)
         ).astype("category")
 
 
@@ -369,12 +450,13 @@ def load_tss_locs(tss: Path) -> dict[Contig, tuple[POS_ARRAY, POS_ARRAY]]:
     Args:
         tss: Path to TSS locations file. The file should be a tab-separated values (TSV)
             file with columns "gene", "transcript", "chro", "TSS", and "strand".
+
     Returns:
         A dictionary mapping chromosome names to tuples of numpy arrays. Each tuple contains two
         numpy arrays: 1. TSS positions on that chromosome, 2. strand (+1 or -1)
     """
     tss_locs_df = read_csv(tss)
-    tss_by_chr_np: dict[Contig, tuple[np.ndarray, np.ndarray]] = dict()
+    tss_by_chr_np: dict[Contig, tuple[np.ndarray, np.ndarray]] = {}
     for chro, chro_tss_df in tss_locs_df.groupby("chro", sort=False):
         tss_positions = chro_tss_df["TSS"].values - 1  # GTF is 1-based but fragments are 0-based
         strand_signs = np.where(chro_tss_df["strand"] == "+", 1, -1)
@@ -390,38 +472,8 @@ def load_tss_locs(tss: Path) -> dict[Contig, tuple[POS_ARRAY, POS_ARRAY]]:
     return tss_by_chr_np
 
 
-def update_tss_insertions(
-    tss_insertions: COUNTS_ARRAY,
-    position: POS_DTYPE.type,
-    tss_vec: POS_ARRAY,
-    strand_vec: POS_ARRAY,
-) -> None:
-    """Update TSS counts with overlapping Transcription Start Site (TSS) in the given TSS vectors.
-
-    Args:
-        ts_insertions: Numpy array of counts of TSS.
-        position: Genomic position to check (0-based).
-        tss_vec: Numpy array of TSS positions on the same chromosome (0-based).
-        strand_vec: Numpy array of strand signs corresponding to the TSS positions (+1 or -1).
-    Returns:
-        Numpy array of distances from each TSS to position (in the strand direction). If there are
-        no TSS within half_window of the position, returns an empty array.
-    """
-    # find index where overlaps start on the left side
-    half_window = POS_DTYPE.type(len(tss_insertions) // 2)
-    tss_left_idx = np.searchsorted(tss_vec, position - half_window, side="left")
-    # find relative (to left) index of end of overlaps on the right side
-    tss_idx_delta = np.searchsorted(tss_vec[tss_left_idx:], position + half_window, side="right")
-    if tss_idx_delta > 0:
-        # there is >= 1 overlap, update the counts of insertion sites
-        tss_right_idx = tss_left_idx + tss_idx_delta
-        update_insertions_range(
-            tss_insertions, tss_vec, strand_vec, tss_left_idx, tss_right_idx, half_window, position
-        )
-
-
 @contextmanager
-def create_and_write(path: Path, mode: Literal["wt", "at"] = "wt") -> Generator[TextIO, None, None]:
+def create_and_write(path: Path, mode: Literal["wt", "at"] = "wt") -> Generator[TextIO]:
     """Open path for writing, creating parent as necessary."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, mode=mode) as f_out:
@@ -450,12 +502,12 @@ def get_sep_from_path(csv_or_tsv: Path) -> Literal["\t", ","]:
             return ","
         case _:
             raise ValueError(
-                f"Could not infer separator for file {csv_or_tsv} with suffix {csv_or_tsv.suffix}. Please "
-                "specify separator with 'sep' argument."
+                f"Could not infer separator for file {csv_or_tsv} with suffix {csv_or_tsv.suffix}. "
+                "Please specify separator with 'sep' argument."
             )
 
 
-def read_csv(path: Path, sep: str | None = None, **kwargs) -> pd.DataFrame:
+def read_csv(path: Path, sep: str | None = None, **kwargs: Any) -> pd.DataFrame:
     """Read (possibly compressed) CSV or TSV using suffix to determine field separator."""
     if sep is None:
         sep = get_sep_from_path(path)
@@ -468,13 +520,37 @@ def read_csv(path: Path, sep: str | None = None, **kwargs) -> pd.DataFrame:
     )
 
 
+def _load_tss_matrix(matrix_file: Path, row_is_wanted: pd.Series | None) -> COUNTS_MATRIX:
+    """Load a TSS sparse matrix written by split-fragments, keeping only the wanted rows."""
+    tss = scipy.sparse.load_npz(f"{matrix_file}")
+    if not isinstance(tss, scipy.sparse.csr_array):
+        raise TypeError(f"Expected {matrix_file} to hold a csr_array, found {type(tss).__name__}")
+    return tss if row_is_wanted is None else tss[row_is_wanted.to_numpy(), :]
+
+
+def _select_atac_cols(
+    usecols: Callable[[Hashable], bool] | Sequence[str] | Sequence[int] | None,
+) -> Sequence[str]:
+    """Select the ATAC QC columns that would be read with usecols (see load_atac_qc)."""
+    match usecols:
+        case func if callable(func):
+            return [col for col in ATAC_QC_COLUMNS if func(col)]
+        case [col, *_cols] if isinstance(col, str):
+            # the first column is a str, so usecols is the Sequence[str] alternative
+            return list(cast(Sequence[str], usecols))
+        case [col, *_cols] if isinstance(col, int):
+            return [ATAC_QC_COLUMNS[idx] for idx in usecols]  # ty:ignore[invalid-argument-type]
+        case _:
+            return ATAC_QC_COLUMNS
+
+
 @overload
 def load_atac_qc(
     atac_qc_dir: Path,
     need_tss: Literal[False],
     logger: Logger,
     log_lock: LogLock | None = None,
-    row_filter: Callable[[pd.DataFrame], pd.Series[bool]] | None = None,
+    row_filter: Callable[[pd.DataFrame], pd.Series] | None = None,
     usecols: Callable[[Hashable], bool] | Sequence[str] | Sequence[int] | None = None,
     accessions: set[str] | None = None,
 ) -> pd.DataFrame: ...
@@ -486,7 +562,7 @@ def load_atac_qc(
     need_tss: Literal[True],
     logger: Logger,
     log_lock: LogLock | None = None,
-    row_filter: Callable[[pd.DataFrame], pd.Series[bool]] | None = None,
+    row_filter: Callable[[pd.DataFrame], pd.Series] | None = None,
     usecols: Callable[[Hashable], bool] | Sequence[str] | Sequence[int] | None = None,
     accessions: set[str] | None = None,
 ) -> tuple[pd.DataFrame, COUNTS_MATRIX]: ...
@@ -497,12 +573,11 @@ def load_atac_qc(
     need_tss: bool,
     logger: Logger,
     log_lock: LogLock | None = None,
-    row_filter: Callable[[pd.DataFrame], pd.Series[bool]] | None = None,
+    row_filter: Callable[[pd.DataFrame], pd.Series] | None = None,
     usecols: Callable[[Hashable], bool] | Sequence[str] | Sequence[int] | None = None,
     accessions: set[str] | None = None,
 ) -> tuple[pd.DataFrame, COUNTS_MATRIX] | pd.DataFrame:
-    """
-    Load combined atac qc (generated per analysis accession, not by pseudobulk).
+    """Load combined atac qc (generated per analysis accession, not by pseudobulk).
 
     If there are no ATAC QC files, return empty DataFrame and counts matrix.
 
@@ -522,6 +597,7 @@ def load_atac_qc(
         accessions: An optional set of analysis set accessions to load QC for. If provided, only the
             QC files of those accessions are read, which lets a worker load just the QC it needs. If
             None, load the QC of every accession in atac_qc_dir.
+
     Returns:
         combined ATAC-seq QC DataFrame and sparse TSS counts matrix if need_tss is True,
         otherwise just combined ATAC-seq DataFrame
@@ -531,7 +607,8 @@ def load_atac_qc(
         logger.info(f"Loading ATAC QC from {atac_qc_dir}")
     atac_combined_qc_list: list[pd.DataFrame] = []
     tss_list: list[COUNTS_MATRIX] = []
-    for tsv in atac_qc_dir.glob("*.tsv"):
+    # sort, because glob yields files in whatever order the filesystem holds them
+    for tsv in sorted(atac_qc_dir.glob("*.tsv")):
         analysis_set_accession = tsv.name.split(".", 1)[0]
         if accessions is not None and analysis_set_accession not in accessions:
             continue
@@ -546,35 +623,23 @@ def load_atac_qc(
         atac_combined_qc_list.append(atac_qc)
         matrix_file = atac_qc_dir / f"{analysis_set_accession}_tss_matrix.npz"
         if need_tss:
-            tss = scipy.sparse.load_npz(f"{matrix_file}")
-            if row_is_wanted is not None:
-                tss = tss[row_is_wanted.to_numpy(), :]
-            tss_list.append(tss)
+            tss_list.append(_load_tss_matrix(matrix_file, row_is_wanted=row_is_wanted))
     if len(atac_combined_qc_list) == 0:
         # there was no ATAC QC present, return empty objects
-        atac_cols = ATAC_QC_COLUMNS
-        match usecols:
-            case func if callable(usecols):
-                atac_cols = [col for col in atac_cols if func(col)]
-            case [col, *_cols] if isinstance(col, str):
-                atac_cols = list(usecols)
-            case [col, *_cols] if isinstance(col, int):
-                atac_cols = [atac_cols[idx] for idx in usecols]  # ty:ignore[invalid-argument-type]
-            case _:
-                pass
-
-        atac_combined_qc = pd.DataFrame([], columns=pd.Index(atac_cols))
+        atac_combined_qc = pd.DataFrame([], columns=pd.Index(_select_atac_cols(usecols)))
         tss_counts = scipy.sparse.csr_array(np.empty((0, 4001), np.uint16))
     else:
         atac_combined_qc = pd.concat(atac_combined_qc_list, axis=0, ignore_index=True)
-        tss_counts = scipy.sparse.vstack(tss_list) if need_tss else None
+        if not need_tss:
+            return atac_combined_qc
+        tss_counts = scipy.sparse.vstack(tss_list)
 
     return (atac_combined_qc, tss_counts) if need_tss else atac_combined_qc
 
 
 def _reorder_qc_columns(combined_qc: pd.DataFrame) -> pd.DataFrame:
     """Reorder columns to move selected columns to the front."""
-    # Move shared columns to the front, and fill out the remaining columns in order afterwards
+    # Move the QC columns to the front, and fill out any other columns in order afterwards
     col_order = [x for x in FRONT_QC_COLUMNS if x in combined_qc.columns] + [
         x for x in combined_qc.columns if x not in set(FRONT_QC_COLUMNS)
     ]
@@ -588,16 +653,21 @@ def merge_rna_and_atac_qc(
     atac_qc: pd.DataFrame,
     logger: Logger,
     log_lock: LogLock | None = None,
+    raise_on_empty: bool = True,
 ) -> pd.DataFrame:
-    """Combined RNA QC and ATAC QC into one DataFrame object by merging on shared columns.
+    """Combine RNA QC and ATAC QC into one DataFrame object, merging on the cell.
 
     Handles cases where DataFrames are empty, but requires columns to exist and be correct.
 
     Args:
         identifier: String to identify data being merged (e.g. accession set ID or pseudobulk ID).
-        rna_qc: DataFrame
-        logger: Logger to output progress
-        log_lock: An optional lock to use when logging. If None, no lock is used
+        rna_qc: RNA QC DataFrame, as written by the pseudobulk-rna tool.
+        atac_qc: ATAC QC DataFrame, as loaded by load_atac_qc.
+        logger: Logger to output progress.
+        log_lock: An optional lock to use when logging. If None, no lock is used.
+        raise_on_empty: If True, raise exception if there is neither RNA-seq or ATAC-seq. If False,
+            warn and return an empty object.
+
     Returns:
         Combined QC DataFrame with columns from both RNA and ATAC QC.
     """
@@ -608,41 +678,86 @@ def merge_rna_and_atac_qc(
         raise ValueError("ATAC QC column labels must be supplied, even if ATAC QC is empty.")
     match len(rna_qc), len(atac_qc):
         case 0, 0:
-            # RNA and ATAC QC are empty (but contain the correct columns), return empty DataFrame
-            combined_qc = pd.DataFrame([], columns=rna_qc.columns + atac_qc.columns)
-            with _log_lock:
-                logger.info(f"No RNA QC or ATAC QC for {identifier}")
+            # RNA and ATAC QC are empty (but contain the correct columns)
+            if raise_on_empty:
+                raise RuntimeError(f"No RNA QC or ATAC QC for {identifier}")
+            else:
+                # warn and return empty DataFrame
+                combined_qc = pd.DataFrame(
+                    [],
+                    columns=rna_qc.columns.append(atac_qc.columns).drop_duplicates(keep="first"),
+                )
+                with _log_lock:
+                    logger.warning(f"No RNA QC or ATAC QC for {identifier}")
         case 0, _:
             # RNA QC is empty (but will contain the correct columns)
-            combined_qc = atac_qc.copy()
-            for col in rna_qc.columns:
-                if col in combined_qc.columns:
-                    continue
-                combined_qc[col] = float("NaN")
+            combined_qc = _merge_with_empty(full_qc=atac_qc, empty_qc=rna_qc)
             with _log_lock:
                 logger.info(f"No RNA QC for {identifier}")
         case _, 0:
             # ATAC QC is missing (but contains the correct columns)
-            combined_qc = rna_qc.copy()
-            for col in atac_qc.columns:
-                if col in combined_qc.columns:
-                    continue
-                combined_qc[col] = float("NaN")
+            combined_qc = _merge_with_empty(full_qc=rna_qc, empty_qc=atac_qc)
             with _log_lock:
                 logger.info(f"No ATAC QC for {identifier}")
         case _:
-            # both present, merge. Drop duplicate pseudobulk_id from atac_qc
-
-            # Confirm that ATAC and RNA cells match
-            combined_qc = pd.merge(
-                rna_qc,
-                atac_qc.drop(columns="pseudobulk_id"),
-                how="outer",
-                on=["analysis_set_accession", "barcode_sample", "annotated"],
-            )
+            # both present, merge on the cell alone: a cell found in only one of them must still get
+            # its pseudobulk_id and annotated from that one
+            combined_qc = _nontrivial_merge_rna_and_atac_qc(rna_qc=rna_qc, atac_qc=atac_qc)
             with _log_lock:
                 logger.info(f"Merged RNA QC and ATAC QC for {identifier}")
 
+    _fix_atac_rna_merge_types(combined_qc)
+    # NOTE: the outer merge sorts the cells, but a QC that is merged with an empty one keeps the
+    # order it was loaded in, so sort the cells too, for them to be in the same order in every case
+    combined_qc = combined_qc.sort_values(
+        by=["analysis_set_accession", "barcode_sample"], kind="stable", ignore_index=True
+    )
+    return _reorder_qc_columns(combined_qc)
+
+
+def _merge_with_empty(full_qc: pd.DataFrame, empty_qc: pd.DataFrame) -> pd.DataFrame:
+    """Create merged QC by starting with a full QC, and adding NaN columns from a missing one."""
+    combined_qc = full_qc.copy()
+    for col in empty_qc.columns:
+        if col in combined_qc.columns:
+            continue
+        combined_qc[col] = float("NaN")
+    return combined_qc
+
+
+def _nontrivial_merge_rna_and_atac_qc(
+    rna_qc: pd.DataFrame,
+    atac_qc: pd.DataFrame,
+) -> pd.DataFrame:
+    """Perform the merge for the non-trivial case (both RNA and ATAC data exist)."""
+    combined_qc = pd.merge(
+        rna_qc,
+        atac_qc,
+        how="outer",
+        on=["analysis_set_accession", "barcode_sample"],
+        suffixes=("_rna", "_atac"),
+    )
+    combined_qc["pseudobulk_id"] = combined_qc["pseudobulk_id_atac"].fillna(
+        combined_qc["pseudobulk_id_rna"]
+    )
+    # NOTE: RNA marks a cell annotated if it is in the metadata, but ATAC only if it also
+    # has a fragment on an allowed contig, so a cell is annotated if either says it is.
+    # fillna(0.) instead of fillna(False) to avoid a deprecation warning
+    combined_qc["annotated"] = combined_qc["annotated_rna"].fillna(0.0).astype(bool) | combined_qc[
+        "annotated_atac"
+    ].fillna(0.0).astype(bool)
+    return combined_qc.drop(
+        columns=[
+            "pseudobulk_id_atac",
+            "pseudobulk_id_rna",
+            "annotated_rna",
+            "annotated_atac",
+        ],
+        inplace=False,
+    )
+
+
+def _fix_atac_rna_merge_types(combined_qc: pd.DataFrame) -> None:
     # NOTE: fillna(0.) instead of fillna(False) to avoid a deprecation warning
     if "found_in_rna" in combined_qc.columns:
         combined_qc["found_in_rna"] = combined_qc["found_in_rna"].fillna(0.0).astype(bool)
@@ -654,4 +769,3 @@ def merge_rna_and_atac_qc(
         combined_qc["rna_read_count"] = combined_qc["rna_read_count"].astype(pd.UInt64Dtype())
     if "gene_count" in combined_qc.columns:
         combined_qc["gene_count"] = combined_qc["gene_count"].astype(pd.UInt64Dtype())
-    return _reorder_qc_columns(combined_qc)

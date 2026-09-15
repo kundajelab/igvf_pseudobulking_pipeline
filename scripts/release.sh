@@ -53,8 +53,8 @@ while [[ "$#" -ge 1 ]]; do
             shift 1
             ;;
         "--")
-            break
             shift 1
+            break
             ;;
         *)
             break
@@ -75,6 +75,13 @@ function validate_version {
     # shellcheck disable=SC2001
     sed 's/^v//' <<< "$version"
 }
+
+# The release commit below uses "git commit -a", so start from a clean tree: then it holds only the
+# version bump, including the lock files that record each project's version.
+if ! git diff --quiet HEAD --; then
+    1>&2 echo "Commit or stash the changes to tracked files before releasing."
+    exit 1
+fi
 
 command="$1"
 case "$command" in
@@ -119,7 +126,7 @@ fi
     esac
 done
 
-git commit -m "${message}"
+git commit -am "${message}"
 git tag \
     -a "v${version}" \
     -m "${message}" \
