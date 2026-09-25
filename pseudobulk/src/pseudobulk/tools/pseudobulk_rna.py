@@ -295,7 +295,7 @@ def _aggregate_pseudobulk(
     adata_paths: list[Path],
     rna_qc_reports_dir: Path,
     pseudobulked_rna_dir: Path,
-) -> None:
+) -> int:
     """Aggregate AnnDatas for this pseudobulk ID, save pseudobulked data, counts, and QC.
 
     Args:
@@ -318,6 +318,10 @@ def _aggregate_pseudobulk(
     p_qc = pd.concat([pd.DataFrame(adata.obs) for adata in adatas], axis=0)
     p_concat: ad.AnnData = ad.concat(adatas, axis=0)
     p_concat.var["gene_symbol"] = p_concat.var.index.map(gene_ref["gene_name"])
+    num_pseudobulk_rows = len(p_concat)
+    if num_pseudobulk_rows == 0:
+        with _worker_log_lock():
+            logger.warning(f"pseudobulk {pseudobulk_id} is empty.")
 
     # Save QC
     rna_qc_reports_dir.mkdir(parents=True, exist_ok=True)
@@ -343,6 +347,7 @@ def _aggregate_pseudobulk(
     # as in _load_and_qc_h5ad: these AnnDatas are only reachable through reference cycles
     del adatas, p_concat
     gc.collect()
+    return num_pseudobulk_rows
 
 
 def _pseudobulk_rna_in_pool(
@@ -355,7 +360,7 @@ def _pseudobulk_rna_in_pool(
     rna_qc_reports_dir: Path,
     temp_dir: Path,
     logger: logging.Logger,
-) -> None:
+) -> int:
     """Load, pseudobulk, and save the RNA data using the supplied pool of worker processes."""
     with tempfile.TemporaryDirectory(dir=f"{temp_dir}") as temp_pseudobulk_dir:
         logger.info(f"Loading and QC-ing h5ads with {num_workers} workers.")
@@ -374,6 +379,7 @@ def _pseudobulk_rna_in_pool(
             f"Aggregating {len(pseudobulk_adata_paths)} pseudobulks with {num_workers} workers."
         )
         pseudobulked_rna_dir = output_dir / "pseudobulks"
+        max_pseudobulk_rows = 0
         futures = [
             executor.submit(
                 _aggregate_pseudobulk,
@@ -385,7 +391,9 @@ def _pseudobulk_rna_in_pool(
             for pseudobulk_id, adata_paths in pseudobulk_adata_paths.items()
         ]
         for future in as_completed(futures):
-            future.result()  # raise any exceptions in worker processes
+            # raise any exceptions in worker processes, and collect number of pseudobulk rows
+            max_pseudobulk_rows = max(max_pseudobulk_rows, future.result())
+        return max_pseudobulk_rows
 
 
 def pseudobulk_rna(
@@ -426,7 +434,7 @@ def pseudobulk_rna(
         initargs=(gene_ref, metadata_loc, Lock(), logger.getEffectiveLevel()),
     ) as executor:
         try:
-            _pseudobulk_rna_in_pool(
+            num_pseudobulk_rows = _pseudobulk_rna_in_pool(
                 executor=executor,
                 num_workers=num_workers,
                 metadata_loc=metadata_loc,
@@ -439,3 +447,6 @@ def pseudobulk_rna(
         except BrokenProcessPool:
             utils.exit_if_oom_killed(executor, oom_kills_before, logger)
             raise
+
+    if num_pseudobulk_rows == 0:
+        raise RuntimeError("No non-empty pseudobulks were found.")

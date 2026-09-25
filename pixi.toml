@@ -18,6 +18,10 @@ pipeline = {
     description = "Run the IGVF pseudobulk pipeline.",
     cmd = """scripts/run-pipeline.sh"""
 }
+fix-bad-beds = {
+    description = "Run the fix-bad-neds.nf workflow.",
+    cmd = """scripts/fix-bad-beds.sh"""
+}
 submit = {
     description = "Submit the pipeline to SLURM as a batch job and return immediately. Forwards arguments to run-pipeline.sh.",
     cmd = """scripts/submit-pipeline.sh"""
@@ -31,7 +35,7 @@ status = {
     cmd = """scripts/status-pipeline.sh"""
 }
 clear = {
-    description = "Clear all the temporary files from past pipeline runs, and any apptainer images.",
+    description = "Clear all the temporary files from past pipeline runs. Run with 'all' to clear all, or specify ANALYSIS_ACCESSION.",
     cmd = """pixi run scripts/remove-intermediates.sh"""
 }
 install-all = {
@@ -55,7 +59,7 @@ run-in-container = {
 }
 lint-nextflow = {
     description = "Lint nextflow pipeline",
-    cmd = "nextflow lint main.nf nextflow.config"
+    cmd = "nextflow lint main.nf fix_bad_beds.nf fix_bad_beds.config nextflow.config"
 }
 lint-scripts = {
     description = "Lint shell scripts",
@@ -99,8 +103,10 @@ watch-log = {
         fi
 
         echo "Following $log_file"
+        # The Sherlock login profile makes sleep a function wrapping it in timeout, which moves it
+        # out of the terminal process group so Ctrl-C cannot stop it. command runs the real sleep.
         while [[ ! -f "$log_file" ]]; do
-            sleep 1
+            command sleep 1
         done
         tail -f -n+1 "$log_file" | grep --line-buffered -v '^+'
     '
@@ -138,6 +144,17 @@ lookup = {
     description = "Lookup record from IGVF portal based on accession or alias, print YAML to stdout.",
     args = ["alias"],
     cmd = """pixi run --manifest-path igvf_portal igvf-portal lookup-record "{{alias}}" """
+}
+track-pseudobulks = {
+    description = "Track status of pseudobulks.",
+    args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
+    cmd = """
+        pixi run --manifest-path igvf_portal \
+            igvf-portal track-pseudobulks \
+            --cli_ids_out "{{workspace}}/missing_cl_ids.txt" \
+            --output "{{workspace}}/pseudobulk_status.tsv" \
+            --google-service-account-json "{{workspace}}/google-service-account.json"
+    """
 }
 
 

@@ -4,13 +4,14 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from igvf_portal import utils
+from igvf_portal.connection import PConnection
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import IgvfMode
-from igvf_portal.igvf_lookup import IgvfLookup
 from igvf_portal.types import (
     AccessionId,
     GeneInfoRow,
     IgvfRecord,
+    PortalId,
     TssRow,
 )
 
@@ -18,24 +19,22 @@ _ID_MATCH = re.compile(r'gene_id "([^"]+)"')
 _NAME_MATCH = re.compile(r'gene_name "([^"]+)"')
 
 
-def _get_reference_file_accessions(
-    igvf_lookup: IgvfLookup, file_accessions: Iterable[AccessionId]
-) -> set[AccessionId]:
+def _get_reference_file_ids(
+    connection: PConnection, file_accessions: Iterable[AccessionId]
+) -> set[PortalId]:
     return {
-        AccessionId(reference_file)
+        ref if isinstance(ref, str) else ref["@id"]
         for file_accession in file_accessions
-        for reference_file in igvf_lookup.lookup_record(file_accession)[
-            "reference_files"
-        ]
+        for ref in connection.lookup_record(file_accession)["reference_files"]
     }
 
 
 def _get_reference_file_records(
-    igvf_lookup: IgvfLookup, reference_file_accessions: Iterable[AccessionId]
+    connection: PConnection, reference_file_ids: Iterable[PortalId]
 ) -> tuple[IgvfRecord, IgvfRecord]:
     reference_file_records = [
-        igvf_lookup.lookup_record(reference_file_accession)
-        for reference_file_accession in reference_file_accessions
+        connection.lookup_record(reference_file_accession)
+        for reference_file_accession in reference_file_ids
     ]
     match [
         _rec
@@ -150,13 +149,13 @@ def get_references(
     logger = utils.get_logger_from_file(__file__)
     logger.info(f"Version: {VERSION}")
 
-    igvf_lookup = IgvfLookup.new(igvf_mode=igvf_mode)
+    connection = PConnection.new(igvf_mode=igvf_mode)
     split_keys = {AccessionId(_split_key.strip()) for _split_key in key.split(",")}
-    reference_file_accessions = _get_reference_file_accessions(
-        igvf_lookup=igvf_lookup, file_accessions=split_keys
+    reference_file_accessions = _get_reference_file_ids(
+        connection=connection, file_accessions=split_keys
     )
     fasta_record, gtf_record = _get_reference_file_records(
-        igvf_lookup=igvf_lookup, reference_file_accessions=reference_file_accessions
+        connection=connection, reference_file_ids=reference_file_accessions
     )
 
     _ = utils.download_record(

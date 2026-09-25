@@ -78,15 +78,15 @@ trap 'rm -rf "$tmp_env"' EXIT
     case "$type" in
         "pixi")
             1>&2 echo "Building docker for pixi project: $project:$tag"
-            "$script_dir/build-project-docker.sh" "${args[@]}" "$project" "$tag"
+            "$script_dir/build-project-docker.sh" ${args[@]+"${args[@]}"} "$project" "$tag"
             ;;
         "uv")
             1>&2 echo "Building docker for uv project: $project:$tag"
-            "$script_dir/build-project-docker.sh" "${args[@]}" "$project" "$tag"
+            "$script_dir/build-project-docker.sh" ${args[@]+"${args[@]}"} "$project" "$tag"
             ;;
         "yaml")
             1>&2 echo "Building docker for yaml project: $project:$tag"
-            "$script_dir/build-yaml-docker.sh" "${args[@]}" "$project" "$tag"
+            "$script_dir/build-yaml-docker.sh" ${args[@]+"${args[@]}"} "$project" "$tag"
             ;;
         *)
             1>&2 echo "Unknown project type: $type for project: $project"

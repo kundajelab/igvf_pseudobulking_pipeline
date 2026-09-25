@@ -4,8 +4,7 @@ set -euo pipefail
 script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 repo_dir=$(dirname "$script_dir")
 
-"$script_dir/find-projects.sh" \
-| while read -r project type; do
+while read -r project type; do
     case "$type" in
         "pixi")
             echo "Checking pixi project: $project"
@@ -22,7 +21,7 @@ repo_dir=$(dirname "$script_dir")
         "yaml")
             echo "Checking yaml project: $project"
             environments_dir="$repo_dir/environments"
-            yaml="$environments_dir/$(tr '[:upper:]' '[:lower:]' <<< "$project").yaml"
+            yaml="$environments_dir/$(tr '[:lower:]' '[:upper:]' <<< "$project").yaml"
             yamllint \
                 -d "{extends: default, rules: {document-start: false}}" \
                 "$yaml"
@@ -37,4 +36,4 @@ repo_dir=$(dirname "$script_dir")
             exit 1
             ;;
     esac
-done
+done < <("$script_dir/find-projects.sh")

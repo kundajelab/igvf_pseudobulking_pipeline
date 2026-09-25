@@ -43,6 +43,7 @@ function read_beds {
 # 2. then read from BED and add an initial column that is chromosome order
 # 3. sort by chromosome index, start, end, then any remaining columns
 # 4. cut away the chromosome index to yield sorted bed rows
+# shellcheck disable=SC2218
 awk -v OFS='\t' '
     FNR == 1 { ++file_num }
     file_num == 1 { idx[$1] = FNR }

@@ -5,22 +5,6 @@ process CALL_PEAKS {
     memory '8 GB'
     conda "environments/CALL_PEAKS.yaml"
     container "${dotenv('CALL_PEAKS_IMAGE')}"
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${raw_insertions_bigwig}",
-        saveAs: { _fileName -> "raw_insertions.bw" },
-        mode: params.publish_mode
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${filtered_overlap_calls}",
-        saveAs: { _fileName -> "peaks.narrowPeak.gz" },
-        mode: params.publish_mode
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${filtered_overlap_bigbed}",
-        saveAs: { _fileName -> "peaks.narrowPeak.bb" },
-        mode: params.publish_mode
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${pvalue_bigwig}",
-        saveAs: { _fileName -> "peaks_minuslog10pval.bw" },
-        mode: params.publish_mode
 
     input:
         tuple val(pseudobulk_id),
