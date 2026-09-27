@@ -7,9 +7,6 @@
       "Bash(pixi run submit*)",
       "Bash(pixi run pipeline*)",
       "Bash(pixi run fix-bad-beds*)",
-      "Bash(*sbatch*)",
-      "Bash(*srun*)",
-      "Bash(*scancel*)",
       "Bash(pixi run clear*)",
       "Bash(pixi run export-secrets*)",
       "Bash(*nextflow secrets*)",
@@ -20,7 +17,10 @@
       "Bash(pixi run download*)",
       "Bash(git push*)",
       "Bash(gh pr create*)",
-      "Bash(pixi run build-dockers*)"
+      "Bash(pixi run build-dockers*)",
+      "Bash(*sbatch*)",
+      "Bash(*srun*)",
+      "Bash(*scancel*)"
     ],
     "allow": [
       "Bash(ls *)",

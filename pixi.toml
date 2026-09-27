@@ -149,11 +149,12 @@ track-pseudobulks = {
     description = "Track status of pseudobulks.",
     args = [ { arg = "workspace", default = "$(scripts/get-default-workspace.sh)"} ],
     cmd = """
+        export ws="{{workspace}}" && \
         pixi run --manifest-path igvf_portal \
             igvf-portal track-pseudobulks \
-            --cli_ids_out "{{workspace}}/missing_cl_ids.txt" \
-            --output "{{workspace}}/pseudobulk_status.tsv" \
-            --google-service-account-json "{{workspace}}/google-service-account.json"
+            --cli-ids-out "$ws/missing_cl_ids.txt" \
+            --output "$ws/pseudobulk_status.tsv" \
+            --google-service-account-json "$ws/google-service-account.json"
     """
 }
 

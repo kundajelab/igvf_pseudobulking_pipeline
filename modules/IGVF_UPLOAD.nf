@@ -5,6 +5,7 @@ process IGVF_UPLOAD {
     secret 'IGVF_SECRET_KEY'
     cpus 2
     memory '4 GB'
+    time 24.h  // should be plenty of time, no reason to cheap out here and try to be exact
     conda "environments/IGVF_PORTAL.yaml"
     container "${dotenv('IGVF_PORTAL_IMAGE')}"
     // A real upload should not be preempted part-way through, so send it to a queue that does not
@@ -48,9 +49,9 @@ process IGVF_UPLOAD {
         local -r folder="pseudobulks/\$pseudobulk_id"
         mkdir -p "\$folder"
         find -L "pseudobulks" -maxdepth 1 -type f -name "\$pseudobulk_id.*" \
-        | while read -r file; do
-            new_name=\$(basename "\$file" | sed "s/^\$pseudobulk_id\\.//")
-            mv "\$file" "\$folder/\$new_name"
+        | while read -r fname; do
+            new_name=\$(basename "\$fname" | sed "s/^\$pseudobulk_id\\.//")
+            mv "\$fname" "\$folder/\$new_name"
         done
         if [[ -f "\$folder/sorted.tsv.gz" ]]; then
             # the fragments file needs to be renamed
@@ -59,7 +60,7 @@ process IGVF_UPLOAD {
     }
 
     # find pseudobulk IDs by search for QC files and restore each one
-    find -L pseudobulks -type f -name "*.per_cell_qc.tsv.gz" \
+    find -L pseudobulks -maxdepth 1 -type f -name '*.per_cell_qc.tsv.gz' \
     | while read -r qc_file; do
         pseudobulk_id=\$(basename "\$qc_file" .per_cell_qc.tsv.gz)
         restore_pseudobulk_dir "\$pseudobulk_id"

@@ -299,15 +299,16 @@ def load_metadata(
 
 
 def sanitize_to_ascii_underscore(text: str) -> str:
-    """Replace unicode characters with similar ascii, replace whitespace and commas with underscores."""
+    """Replace unicode with similar ascii, replace periods, commas, slashes, and whitespace with underscores."""
     # 1. Normalize Unicode to NFKD form to separate characters from accents
     # 2. Encode to ASCII and ignore characters that cannot be converted
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more commas or whitespace characters with a single underscore
+    # 4. Replace one or more periods, commas, forward or back slashes, or whitespace characters with a
+    #    single underscore
     # \s+ matches spaces, tabs, and newlines
-    return re.sub(r"[,\s]+", "_", text)
+    return re.sub(r"[.,/\\\s]+", "_", text)
 
 
 def _get_map_to_sanitized(cell_name: pd.Series) -> dict[str, str]:
@@ -610,7 +611,7 @@ def merge_rna_and_atac_qc(
             # RNA and ATAC QC are empty (but contain the correct columns), return empty DataFrame
             combined_qc = pd.DataFrame(
                 [],
-                columns=rna_qc.columns.append(rna_qc.columns).drop_duplicates(keep="first"),
+                columns=rna_qc.columns.append(atac_qc.columns).drop_duplicates(keep="first"),
             )
             with _log_lock:
                 logger.info(f"No RNA QC or ATAC QC for {identifier}")

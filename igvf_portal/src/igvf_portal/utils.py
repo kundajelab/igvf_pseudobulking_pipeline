@@ -199,15 +199,16 @@ def read_tsv(tsv: Path) -> list[list[str]]:
 
 
 def sanitize_to_ascii_underscore(text: str) -> str:
-    """Replace unicode characters with similar ascii, replace whitespace and commas with underscores."""
+    """Replace unicode with similar ascii, replace periods, commas, slashes, and whitespace with underscores."""
     # 1. Normalize Unicode to NFKD form to separate characters from accents
     # 2. Encode to ASCII and ignore characters that cannot be converted
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more commas or whitespace characters with a single underscore
+    # 4. Replace one or more periods, commas, forward or back slashes, or whitespace characters with a
+    #    single underscore
     # \s+ matches spaces, tabs, and newlines
-    return re.sub(r"[,\s]+", "_", text)
+    return re.sub(r"[.,/\\\s]+", "_", text)
 
 
 def retry[**P, R](

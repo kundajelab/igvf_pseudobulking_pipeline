@@ -31,6 +31,7 @@ process CALL_PEAKS {
 
     script:
     base = pseudobulk_id
+    rep_t_rep_1_overlap = "${base}.peaks_overlap_t_1.narrowPeak"
     overlap_output = "${base}.peaks_overlap_unfiltered.narrowPeak"
     filtered_overlap_calls = "${base}.peaks.narrowPeak.gz"
     filtered_overlap_bigbed = "${base}.peaks.narrowPeak.bb"
@@ -53,9 +54,12 @@ process CALL_PEAKS {
         -f "${params.min_overlap}" \
         -F "${params.min_overlap}" \
         -e -sorted \
-    | bedtools intersect \
+    > "${rep_t_rep_1_overlap}"
+    # NOTE: don't pipe into the second intersect: with -sorted, bedtools stops reading -a once -b is
+    # exhausted, so the first intersect can be killed by SIGPIPE (exit 141) while still writing.
+    bedtools intersect \
         -u \
-        -a stdin \
+        -a "${rep_t_rep_1_overlap}" \
         -b "${rep_2_top_peak_calls}" \
         -g "${chrom_sizes}" \
         -f "${params.min_overlap}" \

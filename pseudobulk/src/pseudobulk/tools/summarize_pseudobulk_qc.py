@@ -56,7 +56,7 @@ def _compute_pseudobulk_combined_qc(
     )
     # copy pseudobulk_atac_qc so that changes aren't propagated to the caller
     pseudobulk_atac_qc = pseudobulk_atac_qc.copy(deep=True)
-    # NOTE: remove raw columns thatare only used for pseudobulk-lvl QC
+    # NOTE: remove raw columns that are only used for pseudobulk-lvl QC
     pseudobulk_atac_qc = pseudobulk_atac_qc.loc[
         :, [x for x in pseudobulk_atac_qc.columns if not x.startswith("raw-")]
     ]
