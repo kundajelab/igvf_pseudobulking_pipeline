@@ -48,7 +48,7 @@ process IGVF_UPLOAD {
         local -r pseudobulk_id=\$1
         local -r folder="pseudobulks/\$pseudobulk_id"
         mkdir -p "\$folder"
-        find -L "pseudobulks" -maxdepth 1 -type f -name "\$pseudobulk_id.*" \
+        find -L "pseudobulks" -maxdepth 1 -name "\$pseudobulk_id.*" -type f \
         | while read -r fname; do
             new_name=\$(basename "\$fname" | sed "s/^\$pseudobulk_id\\.//")
             mv "\$fname" "\$folder/\$new_name"
@@ -60,8 +60,10 @@ process IGVF_UPLOAD {
     }
 
     # find pseudobulk IDs by search for QC files and restore each one
-    find -L pseudobulks -maxdepth 1 -type f -name '*.per_cell_qc.tsv.gz' \
-    | while read -r qc_file; do
+    # NOTE: list the QC files before moving anything. Streaming find into the loop races with the
+    # moves: find can stat a file that was already moved and exit 1, failing the task via pipefail.
+    mapfile -t qc_files < <(find -L pseudobulks -maxdepth 1 -name '*.per_cell_qc.tsv.gz' -type f)
+    for qc_file in "\${qc_files[@]}"; do
         pseudobulk_id=\$(basename "\$qc_file" .per_cell_qc.tsv.gz)
         restore_pseudobulk_dir "\$pseudobulk_id"
     done
