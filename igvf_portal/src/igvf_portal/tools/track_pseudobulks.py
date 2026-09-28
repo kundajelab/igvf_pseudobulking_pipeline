@@ -492,7 +492,17 @@ def track_pseudobulks(
             ),
         )
         logger.info(f"Writing output to {output}")
-        _write_tsv(output, rows_iter)
+        _write_tsv(
+            output,
+            sorted(
+                rows_iter,
+                key=lambda row: (
+                    row["lab"],
+                    row["pseudobulking status"],
+                    row["annotation file accession"],
+                ),
+            ),
+        )
         # now we've iterated through the rows and have all the unique CL_ids. Find the existing CL_ids on the portal
         search_results = api.search(
             type=["SampleTerm"], limit="all", field_filters={"status!": "deleted"}
