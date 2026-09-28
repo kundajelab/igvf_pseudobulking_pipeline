@@ -45,6 +45,7 @@ def _compute_pseudobulk_combined_qc(
     rna_qc: Path | None,
     frip_per_cell: Path | None,
     failure_handler: FailureHandler,
+    raise_on_empty: bool,
     logger: logging.Logger,
 ) -> pd.DataFrame:
     logger.info(f"Computing pseudobulk_combined_qc for {pseudobulk}")
@@ -75,6 +76,7 @@ def _compute_pseudobulk_combined_qc(
         identifier=pseudobulk,
         rna_qc=pseudobulk_rna_qc,
         atac_qc=pseudobulk_atac_qc,
+        raise_on_empty=raise_on_empty,
         logger=logger,
     )
 
@@ -214,6 +216,7 @@ def summarize_pseudobulk_qc(
     fragments_per_cell: Path | None = None,
     fragments_in_peaks_per_cell: Path | None = None,
     failure_actions: list[FailureAction] = [FailureAction.warning, FailureAction.sentinal],
+    raise_on_empty: bool = True,
 ) -> None:
     """Summarize ATAC and RNA QC for the specified pseudobulk.
 
@@ -234,6 +237,8 @@ def summarize_pseudobulk_qc(
         fragments_in_peaks_per_cell: Path to TXT file produced by CALL_PEAKS module.
         output_dir: Path,
         failure_actions: List of potential actions to take if data integrity checks fail.
+        raise_on_empty: If True, raise exception if pseudobulk has neither RNA-seq or ATAC-seq. If
+            False, warn and return an empty object.
     """
     logger = logging.getLogger(name=f"{__package__} aggregate-pseudobulk-qc")
     failure_handler = FailureHandler(
@@ -256,6 +261,7 @@ def summarize_pseudobulk_qc(
         rna_qc=rna_qc,
         frip_per_cell=frip_per_cell,
         failure_handler=failure_handler,
+        raise_on_empty=raise_on_empty,
         logger=logger,
     )
     pseudobulk_combined_qc.to_csv(

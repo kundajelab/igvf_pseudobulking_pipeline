@@ -588,6 +588,7 @@ def merge_rna_and_atac_qc(
     atac_qc: pd.DataFrame,
     logger: Logger,
     log_lock: LogLock | None = None,
+    raise_on_empty: bool = True,
 ) -> pd.DataFrame:
     """Combined RNA QC and ATAC QC into one DataFrame object by merging on shared columns.
 
@@ -598,6 +599,8 @@ def merge_rna_and_atac_qc(
         rna_qc: DataFrame
         logger: Logger to output progress
         log_lock: An optional lock to use when logging. If None, no lock is used
+        raise_on_empty: If True, raise exception if there is neither RNA-seq or ATAC-seq. If False,
+            warn and return an empty object.
     Returns:
         Combined QC DataFrame with columns from both RNA and ATAC QC.
     """
@@ -608,13 +611,17 @@ def merge_rna_and_atac_qc(
         raise ValueError("ATAC QC column labels must be supplied, even if ATAC QC is empty.")
     match len(rna_qc), len(atac_qc):
         case 0, 0:
-            # RNA and ATAC QC are empty (but contain the correct columns), return empty DataFrame
-            combined_qc = pd.DataFrame(
-                [],
-                columns=rna_qc.columns.append(atac_qc.columns).drop_duplicates(keep="first"),
-            )
-            with _log_lock:
-                logger.info(f"No RNA QC or ATAC QC for {identifier}")
+            # RNA and ATAC QC are empty (but contain the correct columns)
+            if raise_on_empty:
+                raise RuntimeError(f"No RNA QC or ATAC QC for {identifier}")
+            else:
+                # warn and return empty DataFrame
+                combined_qc = pd.DataFrame(
+                    [],
+                    columns=rna_qc.columns.append(atac_qc.columns).drop_duplicates(keep="first"),
+                )
+                with _log_lock:
+                    logger.warning(f"No RNA QC or ATAC QC for {identifier}")
         case 0, _:
             # RNA QC is empty (but will contain the correct columns)
             combined_qc = atac_qc.copy()
