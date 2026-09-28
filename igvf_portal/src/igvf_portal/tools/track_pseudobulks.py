@@ -342,7 +342,11 @@ def _get_tracker_row(
         pseudobulking_status: str = (
             ",".join(sorted(audit_errors))
             if len(audit_errors) > 0
-            else PseudobulkUploadStatus.UNATTEMPTED.value
+            else (
+                PseudobulkUploadStatus.UNATTEMPTED.value
+                if annotations_file_qc.can_process
+                else PseudobulkUploadStatus.CANNOT_PROCESS.value
+            )
             if upload_date is None
             else _NO_PSEUDOBULKS
             if num_pseudobulks == 0

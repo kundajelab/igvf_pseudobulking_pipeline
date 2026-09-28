@@ -103,6 +103,14 @@ class AnnotationsFileQc:
     unreadable_annotations_file: bool = False
 
     @property
+    def can_process(self) -> bool:
+        return (
+            len(self.missing_columns) == 0
+            and len(self.assemblies) == 1
+            and not self.unreadable_annotations_file
+        )
+
+    @property
     def uniform_pipeline_status(self) -> str:
         return (
             _UNREADABLE_ANNOTATIONS_FILE
