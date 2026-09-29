@@ -80,6 +80,7 @@ IgvfRecord = TypedDict(
         "file_format": NotRequired["str"],
         "file_format_type": NotRequired["str"],
         "controlled_access": NotRequired[bool],
+        "lab": NotRequired["IgvfRecord"],
         "s3_uri": NotRequired[str],
         "href": str,
         "submitted_file_name": str,

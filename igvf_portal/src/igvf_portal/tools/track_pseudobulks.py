@@ -81,9 +81,10 @@ def _add_status_conditional_formatting(
 ) -> None:
     """Color data rows by both statuses, with failure conditions taking priority."""
     status_col_letter = gspread.utils.rowcol_to_a1(1, status_col_index + 1).rstrip("1")
-    uniform_status_col_letter = gspread.utils.rowcol_to_a1(
-        1, uniform_pipeline_status_col_index + 1
-    ).rstrip("1")
+    # TODO: delete this:
+    # uniform_status_col_letter = gspread.utils.rowcol_to_a1(
+    #     1, uniform_pipeline_status_col_index + 1
+    # ).rstrip("1")
     # Complete statuses have the form "complete: <num_pseudobulks>".
     is_complete = (
         f"REGEXMATCH(${status_col_letter}2,"
@@ -94,14 +95,12 @@ def _add_status_conditional_formatting(
     rules = (
         (f"={is_complete}", _STATUS_ROW_COLORS["green"]),
         (
-            f'=${status_col_letter}2="upload status not validated"',
-            _STATUS_ROW_COLORS["orange"],
+            f'=${status_col_letter}2="{PseudobulkUploadStatus.CANNOT_PROCESS.value}"',
+            _STATUS_ROW_COLORS["red"],
         ),
         (
-            f"=OR(AND(${status_col_letter}2"
-            f'<>"{PseudobulkUploadStatus.UNATTEMPTED.value}",NOT({is_complete})),'
-            rf'REGEXMATCH(${uniform_status_col_letter}2,"\bNO_ASSEMBLIES\b"))',
-            _STATUS_ROW_COLORS["red"],
+            f'=${status_col_letter}2="upload status not validated"',
+            _STATUS_ROW_COLORS["orange"],
         ),
         ("=TRUE", _STATUS_ROW_COLORS["yellow"]),
     )
@@ -193,19 +192,13 @@ def _write_tsv(outfile: Path, rows: Iterable[PseudobulkTrackerRow]) -> None:
 
 def _get_all_pseudobulk_audit_errors_and_timestamps(
     connection: PConnection,
-    analysis_set: AnalysisSet,
-    metadata_rows: list[list[str]],
+    input_ids: Iterable[PortalId],
 ) -> tuple[set[str], list[str]]:
     """Given an input AnalysisSet record, identify status of any PseudobulkSets and date of upload."""
-    if analysis_set.input_for is None:
-        return set(), []
-
     audit_failures: set[str] = set()
     submission_timestamps: list[str] = []
 
-    for input_id in _get_input_ids(
-        connection=connection, analysis_set=analysis_set, metadata_rows=metadata_rows
-    ):
+    for input_id in input_ids:
         _update_pseudobulk_audit_errors_and_date(
             input_id=PortalId(input_id),
             connection=connection,
@@ -252,11 +245,11 @@ def _update_pseudobulk_audit_errors_and_date(
 
 def _process_analysis_set(
     api: IgvfApi, connection: PConnection, analysis_set: AnalysisSet
-) -> tuple[TabularFile | None, set[str], list[str], list[list[str]] | None]:
+) -> tuple[AnnotationsFileQc | None, set[PortalId]]:
     """Get annotations file, pseudobulk upload status, upload date, and annotation rows for the provided AnalysisSet record."""
     annotations_file: TabularFile | None = None
     if analysis_set.files is None:
-        return None, set(), [], None
+        return None, set()
     for file_id in analysis_set.files:
         file = utils.retry(num_tries=3)(api.get_by_id)(file_id)
         if file.content_type == "cell annotations":
@@ -268,17 +261,35 @@ def _process_analysis_set(
                 annotations_file = None
             break
     if annotations_file is None or annotations_file.accession is None:
-        return None, set(), [], None
-    with utils.stream_bytes(api, key=AccessionId(annotations_file.accession)) as f_in:
-        metadata_rows = utils.read_tsv_bytes(f_in)
-    audit_errors, submission_timestamps = (
-        _get_all_pseudobulk_audit_errors_and_timestamps(
+        return None, set()
+    annotations_accession = AccessionId(annotations_file.accession)
+    md5sum = connection.lookup_record(annotations_accession)["md5sum"]
+    db_result = _THREAD_LOCAL_DATA.database.get((annotations_accession, md5sum), None)
+    if db_result is None:
+        with utils.stream_bytes(api, key=annotations_accession) as f_in:
+            metadata_rows = utils.read_tsv_bytes(f_in)
+        try:
+            annotations_file_qc = AnnotationsFileQc.qc(
+                api=api,
+                connection=connection,
+                annotations_file_accession=cast(
+                    AccessionId | None, annotations_file.accession
+                ),
+                metadata_rows=metadata_rows,
+            )
+        except Exception as exception:
+            raise ValueError(
+                f"Error QC-ing {annotations_file.accession}"
+            ) from exception
+        input_ids = _get_input_ids(
             connection=connection,
             analysis_set=analysis_set,
             metadata_rows=metadata_rows,
         )
-    )
-    return annotations_file, audit_errors, submission_timestamps, metadata_rows
+    else:
+        input_ids, annotations_file_qc = db_result
+
+    return annotations_file_qc, input_ids
 
 
 def _get_tracker_row(
@@ -309,8 +320,19 @@ def _get_tracker_row(
 
     api = _THREAD_LOCAL_DATA.api
     connection = _THREAD_LOCAL_DATA.connection
-    annotations_file, audit_errors, submission_timestamps, metadata_rows = (
-        _process_analysis_set(api, connection, analysis_set)
+    annotations_file_qc, input_ids = _process_analysis_set(
+        api, connection, analysis_set
+    )
+
+    # Save annotation file info
+    if annotations_file_qc is None:
+        return str(analysis_set.accession), "no cell annotations", None
+
+    audit_errors, submission_timestamps = (
+        _get_all_pseudobulk_audit_errors_and_timestamps(
+            connection=connection,
+            input_ids=input_ids,
+        )
     )
 
     upload_date = (
@@ -322,48 +344,29 @@ def _get_tracker_row(
     )
     num_pseudobulks = len(submission_timestamps)
 
-    # Save annotation file info
-    if annotations_file is None:
-        return str(analysis_set.accession), "no cell annotations", None
-    else:
-        try:
-            annotations_file_qc = AnnotationsFileQc.qc(
-                api=api,
-                connection=connection,
-                annotations_file_accession=cast(
-                    AccessionId | None, annotations_file.accession
-                ),
-                metadata_rows=metadata_rows,
-            )
-        except Exception as exception:
-            raise ValueError(
-                f"Error QC-ing {annotations_file.accession}"
-            ) from exception
-        pseudobulking_status: str = (
-            ",".join(sorted(audit_errors))
-            if len(audit_errors) > 0
-            else (
-                PseudobulkUploadStatus.UNATTEMPTED.value
-                if annotations_file_qc.can_process
-                else PseudobulkUploadStatus.CANNOT_PROCESS.value
-            )
-            if upload_date is None
-            else _NO_PSEUDOBULKS
-            if num_pseudobulks == 0
-            else f"{PseudobulkUploadStatus.COMPLETE.value}: {num_pseudobulks}"
+    pseudobulking_status: str = (
+        ",".join(sorted(audit_errors))
+        if len(audit_errors) > 0
+        else (
+            PseudobulkUploadStatus.UNATTEMPTED.value
+            if annotations_file_qc.can_process
+            else PseudobulkUploadStatus.CANNOT_PROCESS.value
         )
-        row: PseudobulkTrackerRow = {
-            "principal analysis set accession": f"{analysis_set.accession}",
-            "annotation file accession": f"{annotations_file.accession}",
-            "lab": f"{annotations_file.lab}",
-            "pseudobulking status": pseudobulking_status,
-            "processed date": "" if upload_date is None else upload_date,
-            "missing annotations columns": ",".join(
-                annotations_file_qc.missing_columns
-            ),
-            "uniform pipeline status": annotations_file_qc.uniform_pipeline_status,
-        }
-        return str(analysis_set.accession), row, annotations_file_qc.cl_ids
+        if upload_date is None
+        else _NO_PSEUDOBULKS
+        if num_pseudobulks == 0
+        else f"{PseudobulkUploadStatus.COMPLETE.value}: {num_pseudobulks}"
+    )
+    row: PseudobulkTrackerRow = {
+        "principal analysis set accession": f"{analysis_set.accession}",
+        "annotation file accession": f"{annotations_file_qc.annotations_file_accession}",
+        "lab": f"{annotations_file_qc.lab}",
+        "pseudobulking status": pseudobulking_status,
+        "processed date": "" if upload_date is None else upload_date,
+        "missing annotations columns": ",".join(annotations_file_qc.missing_columns),
+        "uniform pipeline status": annotations_file_qc.uniform_pipeline_status,
+    }
+    return str(analysis_set.accession), row, annotations_file_qc.cl_ids
 
 
 def _set_num_workers(requested_workers: int | None, default: int = 12) -> int:
@@ -419,10 +422,15 @@ _API: IgvfApi
 _CONNECTION: PConnection
 
 
-def _init_worker(igvf_mode: IgvfMode, lock: Lock):
+def _init_worker(
+    igvf_mode: IgvfMode,
+    lock: Lock,
+    database=dict[tuple[AccessionId, str], tuple[set[PortalId], AnnotationsFileQc]],
+):
     """Initialize workers in other processes."""
     _THREAD_LOCAL_DATA.api = utils.open_igvf_api(igvf_mode=igvf_mode)
     _THREAD_LOCAL_DATA.connection = PConnection.new(igvf_mode=igvf_mode, lock=lock)
+    _THREAD_LOCAL_DATA.database = database
 
     # global _API
     # global _CONNECTION

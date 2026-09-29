@@ -590,11 +590,11 @@ class PConnection(Connection):
         #     return False
         # result = json.loads(subprocess_result.stdout)
 
-        self.logger.info(f"Getting head info for Bucket={bucket}, Key={key}")
+        self.logger.debug(f"Getting head info for Bucket={bucket}, Key={key}")
         try:
             result = s3_client.head_object(Bucket=bucket, Key=key)
         except s3_client.exceptions.NoSuchKey, s3_client.exceptions.ClientError:
-            self.logger.info(
+            self.logger.debug(
                 f"Upload url 's3://{bucket}/{key}' doesn't already exist for '{file_id}'."
             )
             return False

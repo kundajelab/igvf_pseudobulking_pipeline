@@ -96,6 +96,8 @@ qc
 
 @dataclasses.dataclass(slots=True, kw_only=True)
 class AnnotationsFileQc:
+    annotations_file_accession: AccessionId
+    lab: str
     missing_columns: frozenset[str]
     on_uniformly_processed_data: set[str] | None
     cl_ids: frozenset[str] | None
@@ -151,8 +153,11 @@ class AnnotationsFileQc:
                 tsv_rows = utils.read_tsv_bytes(f_in)
         else:
             tsv_rows = metadata_rows
+        lab = connection.lookup_record(annotations_file_accession)["lab"]["@id"]
         if len(tsv_rows) == 0:
             return AnnotationsFileQc(
+                annotations_file_accession=annotations_file_accession,
+                lab=lab,
                 missing_columns=_REQUIRED_ANNOTATION_COLUMNS,
                 on_uniformly_processed_data=None,
                 cl_ids=None,
@@ -196,6 +201,8 @@ class AnnotationsFileQc:
                 row[column_index].replace("_", ":") for row in tsv_rows[1:]
             )
         return AnnotationsFileQc(
+            annotations_file_accession=annotations_file_accession,
+            lab=lab,
             missing_columns=frozenset(missing_columns),
             on_uniformly_processed_data=on_uniformly_processed_data,
             cl_ids=cl_ids,
