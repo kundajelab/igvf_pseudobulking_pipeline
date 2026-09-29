@@ -51,7 +51,7 @@ _NO_PSEUDOBULKS: Final[str] = "NO_PSEUDOBULKS"
 
 
 _ANNOTATIONS_DB: dict[
-    AccessionId, tuple[str, AnnotationsFileQc, frozenset[PortalId]]
+    AccessionId, tuple[str, AnnotationsFileQc, frozenset[AccessionId]]
 ] = {}
 
 
@@ -82,14 +82,9 @@ def _add_status_conditional_formatting(
     num_rows: int,
     num_cols: int,
     status_col_index: int,
-    uniform_pipeline_status_col_index: int,
 ) -> None:
     """Color data rows by both statuses, with failure conditions taking priority."""
     status_col_letter = gspread.utils.rowcol_to_a1(1, status_col_index + 1).rstrip("1")
-    # TODO: delete this:
-    # uniform_status_col_letter = gspread.utils.rowcol_to_a1(
-    #     1, uniform_pipeline_status_col_index + 1
-    # ).rstrip("1")
     # Complete statuses have the form "complete: <num_pseudobulks>".
     is_complete = (
         f"REGEXMATCH(${status_col_letter}2,"
@@ -175,7 +170,6 @@ def upload_dataframe_to_google_sheet(
         num_rows=num_rows,
         num_cols=num_cols,
         status_col_index=fields.index("pseudobulking status"),
-        uniform_pipeline_status_col_index=fields.index("uniform pipeline status"),
     )
 
 
@@ -197,19 +191,22 @@ def _write_tsv(outfile: Path, rows: Iterable[PseudobulkTrackerRow]) -> None:
 
 def _get_all_pseudobulk_audit_errors_and_timestamps(
     connection: PConnection,
-    input_ids: Iterable[PortalId],
+    analysis_accessions: Iterable[AccessionId],
 ) -> tuple[set[str], list[str]]:
     """Given an input AnalysisSet record, identify status of any PseudobulkSets and date of upload."""
     audit_failures: set[str] = set()
     submission_timestamps: list[str] = []
 
-    for input_id in input_ids:
-        _update_pseudobulk_audit_errors_and_date(
-            input_id=PortalId(input_id),
-            connection=connection,
-            audit_failures=audit_failures,
-            submission_timestamps=submission_timestamps,
-        )
+    for analysis_accession in analysis_accessions:
+        for input_id in connection.lookup_record(analysis_accession).get(
+            "input_for", []
+        ):
+            _update_pseudobulk_audit_errors_and_date(
+                input_id=input_id,
+                connection=connection,
+                audit_failures=audit_failures,
+                submission_timestamps=submission_timestamps,
+            )
 
     return audit_failures, submission_timestamps
 
@@ -258,7 +255,7 @@ def _update_pseudobulk_audit_errors_and_date(
 
 def _process_analysis_set(
     api: IgvfApi, connection: PConnection, analysis_set: AnalysisSet
-) -> tuple[AnnotationsFileQc | None, frozenset[PortalId]]:
+) -> tuple[AnnotationsFileQc | None, frozenset[AccessionId]]:
     """Get annotations file, pseudobulk upload status, upload date, and annotation rows for the provided AnalysisSet record."""
     annotations_file: TabularFile | None = None
     if analysis_set.files is None:
@@ -278,8 +275,8 @@ def _process_analysis_set(
     annotations_accession = AccessionId(annotations_file.accession)
     md5sum = connection.lookup_record(annotations_accession)["md5sum"]
     match _ANNOTATIONS_DB.get(annotations_accession, None):
-        case db_md5sum, annotations_file_qc, input_ids if db_md5sum == md5sum:
-            return annotations_file_qc, input_ids
+        case db_md5sum, annotations_file_qc, analysis_accessions if db_md5sum == md5sum:
+            return annotations_file_qc, analysis_accessions
         case _:
             with utils.stream_bytes(api, key=annotations_accession) as f_in:
                 metadata_rows = utils.read_tsv_bytes(f_in)
@@ -292,17 +289,19 @@ def _process_analysis_set(
                 )
             except Exception as exception:
                 raise ValueError(f"Error QC-ing {annotations_accession}") from exception
-            input_ids = _get_input_ids(
-                connection=connection,
-                analysis_set=analysis_set,
-                metadata_rows=metadata_rows,
+            analysis_accessions = frozenset(
+                {cast(AccessionId, analysis_set.accession)}
+                | AnnotationsFileQc.get_column_accessions(
+                    metadata_rows, "analysis_set_accession"
+                )
             )
+
             _ANNOTATIONS_DB[annotations_accession] = (
                 md5sum,
                 annotations_file_qc,
-                input_ids,
+                analysis_accessions,
             )
-            return annotations_file_qc, input_ids
+            return annotations_file_qc, analysis_accessions
 
 
 def _get_tracker_row(
@@ -335,7 +334,7 @@ def _get_tracker_row(
 
         api = _THREAD_LOCAL_DATA.api
         connection = _THREAD_LOCAL_DATA.connection
-        annotations_file_qc, input_ids = _process_analysis_set(
+        annotations_file_qc, analysis_accessions = _process_analysis_set(
             api, connection, analysis_set
         )
 
@@ -346,7 +345,7 @@ def _get_tracker_row(
         audit_errors, submission_timestamps = (
             _get_all_pseudobulk_audit_errors_and_timestamps(
                 connection=connection,
-                input_ids=input_ids,
+                analysis_accessions=analysis_accessions,
             )
         )
 

@@ -7,7 +7,6 @@ from collections.abc import (
     Collection,
     Sequence,
 )
-from functools import cached_property
 from pathlib import Path
 from typing import Final, cast
 
@@ -148,7 +147,7 @@ class FileUploadRows:
     signal_rows: list[UploadRow] = dataclasses.field(default_factory=list)
 
 
-@dataclasses.dataclass(kw_only=True, slots=True)
+@dataclasses.dataclass(kw_only=True, slots=False)
 class UploadState:
     basedir: Path
     config: GenUploadConfig
@@ -165,6 +164,7 @@ class UploadState:
     required_cell_ids: set[Alias] = dataclasses.field(default_factory=set)
     required_sample_ids: set[Alias] = dataclasses.field(default_factory=set)
     required_format_specs: set[Alias] = dataclasses.field(default_factory=set)
+    log_level: str = LogLevel.info.name
 
     def __post_init__(self):
         # Check for missing or extra pseudobulks
@@ -180,6 +180,7 @@ class UploadState:
                 f'igvf_mode="{self.config.connection.mode.value}"',
             ]
         )
+        self.log_level = LogLevel(self.config.logger.getEffectiveLevel()).name
 
     @property
     def pseudobulk_dir(self) -> Path:
@@ -266,10 +267,6 @@ class UploadState:
             self._get_pseudobulk_uploads(analysis_step)
             self._get_intermediate_uploads(analysis_step)
             self._get_principal_uploads(analysis_step)
-
-    @cached_property
-    def log_level(self) -> str:
-        return LogLevel(self.config.logger.getEffectiveLevel()).name
 
     def _write_tsv(
         self,
