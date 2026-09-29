@@ -236,18 +236,6 @@ def _bed_record_to_bigbed_record(bed_record: IgvfRecord) -> dict[str, object]:
     return bb_dict
 
 
-def _set_num_workers(requested_workers: int | None, default: int = 12) -> int:
-    if requested_workers is None or requested_workers <= 0:
-        num_workers = os.process_cpu_count()
-        if num_workers is None:
-            num_workers = os.cpu_count()
-            if num_workers is None:
-                num_workers = default
-        return num_workers
-    else:
-        return requested_workers
-
-
 def _iter_rows(
     search_result_items: Iterable[SearchResultItem] | None,
     logger: logging.Logger,
@@ -303,7 +291,7 @@ def find_bad_beds(
         continue_on_failed_credentials: If True, when attempting to re-upload a file, if credentials
           cannot be obtained, skip upload and continue. If False, throw exception. Generally this
           results from a file being finalized, and not needing re-upload.
-        num_workers: Number of connections to the IGVF Portal. If <= 0, use one per CPU.
+        num_workers: Number of connections to the IGVF Portal. Must be >= 1.
         lab: Which lab to limit to when searching for bad pseudobulks. Use '*' for all labs.
         max_pseudobulks: If set to an integer, then quit after checking that number of pseudobulks.
     """
@@ -314,6 +302,8 @@ def find_bad_beds(
     logger = utils.get_logger_from_file(__file__)
     utils.setup_logger(logger, level=logging.INFO)
     logger.info(f"Version: {VERSION}")
+    if num_workers <= 0:
+        raise ValueError("num_workers must be positive.")
 
     register_config = RegisterConfig(
         igvf_mode=igvf_mode,
@@ -355,5 +345,5 @@ def find_bad_beds(
         logger=logger,
         register_config=register_config,
         output=output,
-        num_workers=_set_num_workers(requested_workers=num_workers, default=12),
+        num_workers=num_workers,
     )

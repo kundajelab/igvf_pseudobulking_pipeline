@@ -35,6 +35,7 @@ from igvf_portal.types import (
     Alias,
     IgvfRecord,
     PortalId,
+    RecordNotFound,
 )
 
 
@@ -43,8 +44,9 @@ class PConnection(Connection):
     logger: ParallelLogger
     continue_on_failed_credentials: bool
     region_name: str
-    record_lookups: dict[AccessionId | Alias | PortalId, IgvfRecord]
+    record_lookups: dict[AccessionId | Alias | PortalId, IgvfRecord | tuple[()]]
     mode: IgvfMode
+    md5sums: dict[str, str]
 
     def __init__(
         self,
@@ -66,15 +68,13 @@ class PConnection(Connection):
         )
 
         # create a session that retries common network problems
-        # -note that 403 (forbidden) is there, because the portal actually gives erroneous
-        #  forbidden responses sometimes
         retry = Retry(
             total=3,
             read=3,  # retries on read timeout
             connect=3,  # retries on connection timeout
             status=2,
-            backoff_factor=5,  # wait 5s, 10s, 20s between retries
-            status_forcelist=[403, 404, 429, 500, 502, 503, 504],
+            backoff_factor=5,  # wait 0s,5s, 10s, 20s between retries
+            status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "POST"],  # urllib3 ≥ 1.26
             raise_on_status=False,
         )
@@ -89,6 +89,7 @@ class PConnection(Connection):
         self.continue_on_failed_credentials = continue_on_failed_credentials
         self.record_lookups = {}
         self.mode = _igvf_mode
+        self.md5sums = {}
 
     @classmethod
     def new(
@@ -374,6 +375,9 @@ class PConnection(Connection):
             record_id: str = response_json.get("accession", response_json["uuid"])
             self.logger.debug(f"Object posted with identifier: {record_id}")
             self._log_post(aliases=aliases, dacc_id=record_id)
+            md5sum = payload.get("md5sum", None)
+            if isinstance(md5sum, str) and len(md5sum) > 0:
+                self.md5sums[record_id] = md5sum
             # Run 'after' hooks:
             self.after_submit_hooks(
                 record_id, profile.name, method=self.POST, upload_file=upload_file
@@ -520,6 +524,9 @@ class PConnection(Connection):
                 payload=payload,
                 existing_record=existing_record,
             )
+            md5sum = payload.get("md5sum", None)
+            if isinstance(md5sum, str) and len(md5sum) > 0:
+                self.md5sums[record_id] = md5sum
             self.after_submit_hooks(
                 record_id,
                 profile.name,
@@ -578,6 +585,7 @@ class PConnection(Connection):
         bucket: str,
         key: str,
         s3_client: S3Client,
+        local_md5_sum: str,
     ) -> bool:
         # subprocess_result = subprocess.run(
         #     f"aws s3api head-object --bucket '{bucket}' --key '{key}'",
@@ -604,7 +612,6 @@ class PConnection(Connection):
             ) from exception
 
         remote_md5_sum = result.get("Metadata", {}).get("md5sum", "")
-        local_md5_sum = utils.md5sum(file_path)
         # this is unneccessary: interrupted/failed uploads do not result in remote obects,
         # so the only way the metadata could be present is if the object uploads successfully
         # remote_crc64_nvme_checksum = result.get("ChecksumCRC64NVME", "")
@@ -688,12 +695,16 @@ class PConnection(Connection):
             case _:
                 raise ValueError(f"Invalid type {type(file_path)} for file_path.")
 
+        md5sum = self.md5sums.get(file_id, None)
+        if md5sum is None:
+            md5sum = utils.md5sum(file_path)
         if self._is_already_uploaded(
             file_path=file_path,
             file_id=file_id,
             bucket=bucket,
             key=key,
             s3_client=s3_client,
+            local_md5_sum=md5sum,
         ):
             return
 
@@ -707,7 +718,7 @@ class PConnection(Connection):
             Filename=f"{file_path}",
             Bucket=bucket,
             Key=key,
-            ExtraArgs={"Metadata": {"md5sum": utils.md5sum(file_path)}},
+            ExtraArgs={"Metadata": {"md5sum": md5sum}},
         )
         self.logger.info(
             f"Successfully uploaded '{file_path}' to 's3://{bucket}/{key}'."
@@ -772,12 +783,42 @@ class PConnection(Connection):
             self.logger.debug("NOT FOUND")
             if ignore404:
                 return None
+            try:
+                response.raise_for_status()
+            except requests.HTTPError as http_error:
+                raise RecordNotFound(f"{','.join(rec_ids)} not found") from http_error
+
         # At this point in the code, the response is not okay.
         # Raise the error for last response we got:
         response.raise_for_status()
 
+    def _get_record_from_lookups[T: AccessionId | Alias | PortalId](
+        self, keys: list[T]
+    ) -> IgvfRecord | tuple[()] | None:
+        all_negative_cache = True
+        for key in keys:
+            match self.record_lookups.get(key, None):
+                case dict(record):
+                    return record
+                case tuple():
+                    pass
+                case None:
+                    all_negative_cache = False
+        return tuple() if all_negative_cache else None
+
+    def cache_record[T: AccessionId | Alias | PortalId](
+        self, keys: list[T], record: IgvfRecord | tuple[()]
+    ) -> None:
+        for key in keys:
+            self.record_lookups[key] = record
+
     def lookup_record[T: AccessionId | Alias | PortalId](
-        self, key: T | list[T], database=False, ignore404=True, frame=None
+        self,
+        key: T | list[T],
+        database: bool = False,
+        ignore404: bool = True,
+        frame: str | None = None,
+        cache_negative: bool = False,
     ) -> IgvfRecord:
         """Lookup record, using table of previous lookups if it's present, getting it directly and adding to table.
 
@@ -792,29 +833,24 @@ class PConnection(Connection):
                 Portal.  In this case, If set to `True`, then None will be returned.
                 If set to `False`, then an Exception will be raised.
         """
-        if isinstance(key, str):
-            record = self.record_lookups.get(key, None)
-        else:
-            record = next(
-                (
-                    r
-                    for r in (self.record_lookups.get(_k, None) for _k in key)
-                    if r is not None
-                ),
-                None,
-            )
-        if record is None:
-            record = self.get(
-                rec_ids=key, database=database, ignore404=ignore404, frame=frame
-            )
-            if record is None:
-                raise ValueError(f"Could not find record for '{key}'")
-            if isinstance(key, str):
-                self.record_lookups[key] = record
-            else:
-                for _k in key:
-                    self.record_lookups[_k] = record
-        return record
+        keys = [key] if isinstance(key, str) else key
+        match self._get_record_from_lookups(keys):
+            case dict(record):
+                return record
+            case ():
+                raise RecordNotFound(f"Could not find record for '{','.join(keys)}'")
+            case None:
+                record = self.get(
+                    rec_ids=keys, database=database, ignore404=ignore404, frame=frame
+                )
+                if record is None:
+                    if cache_negative:
+                        self.cache_record(keys, ())
+                    raise RecordNotFound(
+                        f"Could not find record for '{','.join(keys)}'"
+                    )
+                self.cache_record(keys, record)
+                return record
 
     def infer_principal_accessions(
         self, intermediate_accessions: Iterable[AccessionId]

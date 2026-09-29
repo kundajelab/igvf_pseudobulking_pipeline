@@ -16,6 +16,7 @@ from igvf_portal.gen_upload_config import GenUploadConfig
 from igvf_portal.types import (
     Alias,
     PortalId,
+    RecordNotFound,
     UploadRow,
 )
 
@@ -145,8 +146,10 @@ class IgvfFile(IgvfUploadBase):
         # Should be possible for files that are in the input file_set (not pseudobulk files)
         # or files that are being patched
         try:
-            file_set_id = config.lookup_record(file_set_alias)["@id"]
-        except Exception:
+            file_set_id = config.lookup_record(file_set_alias, cache_negative=True)[
+                "@id"
+            ]
+        except RecordNotFound:
             file_set_id = file_set_alias
 
         row: UploadRow = {
@@ -272,7 +275,7 @@ class IgvfPseudobulk(IgvfUploadBase):
         cell_type = PortalId(f"/sample-terms/{cl_id.replace(':', '_')}/")
         try:
             term_name = config.lookup_record(cell_type)["term_name"]
-        except requests.exceptions.HTTPError, ValueError:
+        except requests.exceptions.HTTPError, ValueError, RecordNotFound:
             # note, if this happens, upload will fail. But we can still generate the correct upload script,
             # and manually ask the DACC to add the required SampleTerm
             records = utils.lookup_ontology_by_cl_id(cl_id)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from igvf_portal import VERSION, utils
 from igvf_portal.connection import PConnection
-from igvf_portal.enums import IgvfMode
+from igvf_portal.enums import IgvfMode, LogLevel
 from igvf_portal.gen_upload_config import GenUploadConfig
 from igvf_portal.parallel_logger import ParallelLogger
 from igvf_portal.types import PortalId
@@ -22,6 +22,7 @@ def gen_upload_script(
     alias_prefix: str = "anshul-kundaje",
     igvf_mode: IgvfMode = IgvfMode.prod,
     dry_run: bool = True,
+    log_level: LogLevel = LogLevel.info,
 ):
     """Generate TSVs for documents, pseudobulk sets (with document links) and tabular, matrix and signal files.
 
@@ -44,7 +45,10 @@ def gen_upload_script(
         dry_run: if True, do NOT modify the IGVF portal. If False, actually upload pseudobulk results.
     """
     utils.check_access_keys()
-    logger = ParallelLogger.new(utils.get_logger_from_file(__file__))
+    utils.fix_igvf_logging(level=log_level.value)
+    logger = ParallelLogger.new(
+        utils.get_logger_from_file(__file__, level=log_level.value)
+    )
     logger.info(f"Version: {VERSION}")
 
     # store options and helpful info in a big GenUploadConfig object

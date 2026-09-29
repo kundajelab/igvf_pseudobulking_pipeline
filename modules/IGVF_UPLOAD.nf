@@ -4,7 +4,7 @@ process IGVF_UPLOAD {
     secret 'IGVF_API_KEY'
     secret 'IGVF_SECRET_KEY'
     cpus 2
-    memory '4 GB'
+    memory '8 GB'
     time 24.h  // should be plenty of time, no reason to cheap out here and try to be exact
     conda "environments/IGVF_PORTAL.yaml"
     container "${dotenv('IGVF_PORTAL_IMAGE')}"
@@ -81,7 +81,8 @@ process IGVF_UPLOAD {
         --metadata-file "${metadata_file}" \
         --annotations-tsv "${cell_name_to_annotation_mapping}" \
         ${dry_run ? "--dry-run" : "--no-dry-run"} \
-        --igvf-mode "${igvf_mode}"
+        --igvf-mode "${igvf_mode}" \
+        --log-level debug
 
     1>&2 echo "Running upload script:"
     ./upload.sh

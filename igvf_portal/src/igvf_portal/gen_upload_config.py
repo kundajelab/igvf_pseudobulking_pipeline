@@ -58,9 +58,9 @@ class GenUploadConfig:
         default_factory=lambda: defaultdict(list)
     )
 
-    def lookup_record(self, key: Alias | AccessionId | PortalId) -> IgvfRecord:
+    def lookup_record(self, *args, **kwargs) -> IgvfRecord:
         """Convenience method to lookup record within GenUploadConfig."""
-        return self.connection.lookup_record(key)
+        return self.connection.lookup_record(*args, **kwargs)
 
     def _lookup_analysis_step_version(self, analysis_step: AnalysisStep) -> PortalId:
         """Get aliases for the requested AnalysisStepVersion."""

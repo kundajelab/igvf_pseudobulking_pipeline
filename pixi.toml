@@ -152,10 +152,8 @@ track-pseudobulks = {
         export ws="{{workspace}}" && \
         pixi run --manifest-path igvf_portal \
             igvf-portal track-pseudobulks \
-            --cli-ids-out "$ws/missing_cl_ids.txt" \
-            --output "$ws/pseudobulk_status.tsv" \
-            --google-service-account-json "$ws/google-service-account.json"
-    """
+            --output "$ws" \
+            --google-service-account-json "$ws/google-service-account.json" """
 }
 
 

@@ -82,18 +82,6 @@ def _get_assemblies(
         metadata_path.unlink()
 
 
-"""
-from igvf_portal import utils
-from igvf_portal.connection import PConnection
-from igvf_portal.annotations_file_qc import AnnotationsFileQc
-from igvf_portal.types import AccessionId
-api = utils.open_igvf_api("prod")
-connection = PConnection("prod")
-qc = AnnotationsFileQc.qc(api=api, connection=connection, annotations_file_accession=AccessionId("IGVFFI7967DCIZ"))
-qc
-"""
-
-
 @dataclasses.dataclass(slots=True, kw_only=True)
 class AnnotationsFileQc:
     annotations_file_accession: AccessionId
@@ -167,6 +155,7 @@ class AnnotationsFileQc:
 
         if "analysis_set_accession" in missing_columns:
             on_uniformly_processed_data = None
+            assemblies = ()
         else:
             on_uniformly_processed_data = _collect_uniform_pipeline_status(
                 connection=connection,
@@ -174,10 +163,11 @@ class AnnotationsFileQc:
                     tsv_rows=tsv_rows, column_header="analysis_set_accession"
                 ),
             )
-            num_assemblies = len(
-                _get_assemblies(connection=connection, annotations_rows=tsv_rows)
+            assemblies = _get_assemblies(
+                connection=connection, annotations_rows=tsv_rows
             )
-            match num_assemblies, on_uniformly_processed_data:
+
+            match len(assemblies), on_uniformly_processed_data:
                 case 1, _:
                     pass
                 case 0, None:
@@ -205,5 +195,6 @@ class AnnotationsFileQc:
             lab=lab,
             missing_columns=frozenset(missing_columns),
             on_uniformly_processed_data=on_uniformly_processed_data,
+            assemblies=assemblies,
             cl_ids=cl_ids,
         )

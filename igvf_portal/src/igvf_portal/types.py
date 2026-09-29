@@ -167,3 +167,9 @@ class HasAnnotations(Protocol):
 
 
 class FromTypedDict(Mapping, HasAnnotations): ...
+
+
+class RecordNotFound(ValueError):
+    """Subclass of ValueError for specific checks that a record was not found."""
+
+    pass

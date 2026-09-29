@@ -7,11 +7,13 @@ from collections.abc import (
     Collection,
     Sequence,
 )
+from functools import cached_property
 from pathlib import Path
 from typing import Final, cast
 
 from igvf_portal.enums import (
     AnalysisStep,
+    LogLevel,
     OutputCategory,
 )
 from igvf_portal.gen_upload_config import GenUploadConfig
@@ -265,6 +267,10 @@ class UploadState:
             self._get_intermediate_uploads(analysis_step)
             self._get_principal_uploads(analysis_step)
 
+    @cached_property
+    def log_level(self) -> str:
+        return LogLevel(self.config.logger.getEffectiveLevel()).name
+
     def _write_tsv(
         self,
         upload_type: str,
@@ -300,7 +306,9 @@ class UploadState:
             f"1>&2 echo Register {upload_type}{step_description}"
         )
         self.submission_rows.append(
-            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode" --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode"'
+            f' --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f' --log-level "{self.log_level}"'
         )
 
     def write_upload_state(self) -> None:

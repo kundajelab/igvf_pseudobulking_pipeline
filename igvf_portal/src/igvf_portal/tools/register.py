@@ -1,6 +1,5 @@
 import csv
 import json
-import multiprocessing
 import re
 import time
 from collections.abc import Iterable, Iterator, Mapping
@@ -402,7 +401,7 @@ def register(
     upload_file: bool = config_defaults.UPLOAD_FILE,
     upload_duplicate: bool = config_defaults.UPLOAD_DUPLICATE,
     expect_patch: bool = config_defaults.EXPECT_PATCH,
-    num_workers: int = 12,
+    num_workers: int = 16,
     update_secs: float = 30.0,
     log_level: LogLevel = LogLevel.info,
 ):
@@ -430,12 +429,12 @@ def register(
         upload_file: If True, actually upload files when posting.
         upload_duplicate: If True, upload file even if a duplicate record exists. Used for uploading files
             when a record POSTed but the upload failed.
-        num_workers: Number of connections to the IGVF Portal. If <= 0, use one per CPU.
+        num_workers: Number of connections to the IGVF Portal. Must be >= 1.
         update_secs: Time in seconds between progress logs
         log_level: Log level for output
     """
     utils.check_access_keys()
-    utils.fix_igvf_logging()
+    utils.fix_igvf_logging(level=log_level.value)
     logger = utils.get_logger_from_file(__file__, level=log_level.value)
     logger.info(f"Version: {VERSION}")
 
@@ -476,7 +475,7 @@ def register(
     )
 
     if num_workers <= 0:
-        num_workers = multiprocessing.cpu_count()
+        raise ValueError("num_workers must be positive.")
     with ThreadPoolExecutor(
         max_workers=num_workers,
         initializer=_init_worker,
