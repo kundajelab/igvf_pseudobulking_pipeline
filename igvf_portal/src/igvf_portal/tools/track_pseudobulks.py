@@ -32,7 +32,8 @@ _STATUS_ROW_COLORS: Mapping[str, Mapping[str, float]] = MappingProxyType(
         "red": MappingProxyType({"red": 0.99, "green": 0.6, "blue": 0.53}),
         "yellow": MappingProxyType({"red": 1.0, "green": 1.0, "blue": 0.63}),
         "green": MappingProxyType({"red": 0.18, "green": 0.85, "blue": 0.33}),
-        "orange": MappingProxyType({"red": 0.99, "green": 0.85, "blue": 0.5333}),
+        "orange": MappingProxyType({"red": 0.99, "green": 0.85, "blue": 0.53}),
+        "magenta": MappingProxyType({"red": 1.0, "green": 0.24, "blue": 0.82}),
     }
 )
 
@@ -90,8 +91,11 @@ def _add_status_conditional_formatting(
         f"REGEXMATCH(${status_col_letter}2,"
         rf'"^{PseudobulkUploadStatus.COMPLETE.value}: \d+$")'
     )
-    # Sheets uses the first matching rule, so complete and not-validated statuses
-    # take priority over red, including NO_ASSEMBLIES.
+    # Sheets uses the first matching rule, so the rules for choosing row color are:
+    # if status starts with complete: green (good!)
+    # elif status == CANNOT_PROCESS: red (input data has problems)
+    # elif status == "upload status not validated": orange (portal is validating the upload)
+    # else: magenta (the pseudobulks have status errors)
     rules = (
         (f"={is_complete}", _STATUS_ROW_COLORS["green"]),
         (
@@ -106,7 +110,7 @@ def _add_status_conditional_formatting(
             f'=${status_col_letter}2="unattempted"',
             _STATUS_ROW_COLORS["yellow"],
         ),
-        ("=TRUE", _STATUS_ROW_COLORS["red"]),
+        ("=TRUE", _STATUS_ROW_COLORS["magenta"]),
     )
     grid_range = {
         "sheetId": worksheet.id,

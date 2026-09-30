@@ -45,6 +45,7 @@ class PConnection(Connection):
     continue_on_failed_credentials: bool
     region_name: str
     record_lookups: dict[AccessionId | Alias | PortalId, IgvfRecord | tuple[()]]
+    _ids_for_compare: dict[str, str]
     mode: IgvfMode
 
     def __init__(
@@ -87,6 +88,7 @@ class PConnection(Connection):
         self.logger = ParallelLogger.new(logger=self.debug_logger, lock=lock)
         self.continue_on_failed_credentials = continue_on_failed_credentials
         self.record_lookups = {}
+        self._ids_for_compare = {}
         self.mode = _igvf_mode
 
     @classmethod
@@ -117,6 +119,26 @@ class PConnection(Connection):
     def check_dry_run(self) -> bool:
         return self.dry_run
 
+    def _id_for_compare(self, value: str) -> str:
+        """Resolve an identifier (alias, accession, or path) to the record's @id, caching the answer.
+
+        Only @id is needed, so use frame=object: in submission mode an embedded GET renders every
+        linked record from the database, which is slow enough under load to time out. Answers go in
+        their own cache rather than record_lookups, because lookup_record callers expect the
+        embedded fields that frame=object omits.
+        """
+        cached = self._ids_for_compare.get(value)
+        if cached is not None:
+            return cached
+        record = self.get(value, frame="object")
+        if record is None:
+            raise RecordNotFound(f"Could not find record for '{value}'")
+        record_id = cast(str, record["@id"])
+        # the existing record's side of a comparison holds @ids, so remember those too
+        self._ids_for_compare[value] = record_id
+        self._ids_for_compare[record_id] = record_id
+        return record_id
+
     def _named_individual_props_equal[T](self, key: str, prop1: T, prop2: T) -> bool:
         if prop1 == prop2:
             return True
@@ -129,10 +151,12 @@ class PConnection(Connection):
             "input_file_sets",
         }:
             return False
+        if not (isinstance(prop1, str) and isinstance(prop2, str)):
+            return False
         # maybe we need to look these up and compare IDs, as opposed to comparing an alias to an accession
         try:
-            return self.get(prop1)["@id"] == self.get(prop2)["@id"]
-        except Exception:
+            return self._id_for_compare(prop1) == self._id_for_compare(prop2)
+        except RecordNotFound:
             return False
 
     def _lookup_id_for_compare[T](self, key: str, value: T) -> T | str:
@@ -154,9 +178,12 @@ class PConnection(Connection):
                 return value
             case str(s_value):
                 if key in lookup_props:
+                    # Only a record that genuinely does not exist falls back to the raw value. Any
+                    # other failure (timeout, server error) propagates: treating it as "different"
+                    # would PATCH a record that did not need it.
                     try:
-                        return self.get(s_value)["@id"]
-                    except Exception:
+                        return self._id_for_compare(s_value)
+                    except RecordNotFound:
                         pass
                 return value
             case _:
@@ -527,6 +554,7 @@ class PConnection(Connection):
                 profile=profile,
                 accession_id=accession_id,
                 payload=payload,
+                original_record=original_record,
             )
             return (
                 (original_record, status_code)
@@ -627,22 +655,65 @@ class PConnection(Connection):
         profile: IgvfSchema,
         accession_id: AccessionId,
         payload: dict[str, object],
+        original_record: dict[str, object] | None = None,
     ) -> None:
         """Perform the upload if we are supposed to"""
         if upload_file:
             if profile.name in self.profiles.FILE_PROFILE_ID:
+                file_path = Path(str(payload[self.profiles.SUBMITTED_FILE_PROP_NAME]))
                 md5sum = payload.get("md5sum", None)
                 set_md5sum = (
                     md5sum if isinstance(md5sum, str) and len(md5sum) > 0 else None
                 )
-                file_path = Path(str(payload[self.profiles.SUBMITTED_FILE_PROP_NAME]))
+                if original_record is not None:
+                    upload_status = cast(
+                        str | None, original_record.get("upload_status", None)
+                    )
+                    if set_md5sum is None:
+                        set_md5sum = utils.md5sum(file_path)
+                    original_md5sum = cast(
+                        str | None, original_record.get("md5sum", None)
+                    )
+                    if upload_status in ("validated", "validation exempted"):
+                        if (
+                            original_md5sum is not None
+                            and original_md5sum != set_md5sum
+                        ):
+                            self.logger.warning(
+                                f"Skipping upload of {accession_id} with changed md5sum because "
+                                f"remote file is {upload_status}. Contact the DACC to invalidate "
+                                "if it needs to be replaced."
+                            )
+                        else:
+                            self.logger.info(
+                                f"Skipping upload of {accession_id} because remote file is {upload_status}."
+                            )
+                        return
+                    else:
+                        if (
+                            original_md5sum is not None
+                            and original_md5sum != set_md5sum
+                        ):
+                            self.logger.info(
+                                f"Uploading {accession_id} with changed md5sum."
+                            )
+                        else:
+                            self.logger.info(
+                                f"Uploading {accession_id} with unchanged md5sum, because "
+                                f"upload_status is {upload_status} and S3 backing cannot be "
+                                "directly checked."
+                            )
                 self.upload_file(
                     file_id=accession_id, file_path=file_path, set_md5sum=set_md5sum
                 )
             else:
-                self.logger.debug("No upload because record is not a file.")
+                self.logger.debug(
+                    f"No upload of {accession_id} because record is not a file."
+                )
         else:
-            self.logger.debug("Skipping upload because upload is False")
+            self.logger.debug(
+                f"Skipping upload of {accession_id} because upload is False"
+            )
 
     def upload_file(
         self,
@@ -710,19 +781,17 @@ class PConnection(Connection):
             md5sum = set_md5sum
         else:
             md5sum = utils.md5sum(file_path)
-        if self._is_already_uploaded(
-            file_path=file_path,
-            file_id=file_id,
-            bucket=bucket,
-            key=key,
-            s3_client=s3_client,
-            local_md5_sum=md5sum,
-        ):
-            return
+        # if self._is_already_uploaded(
+        #     file_path=file_path,
+        #     file_id=file_id,
+        #     bucket=bucket,
+        #     key=key,
+        #     s3_client=s3_client,
+        #     local_md5_sum=md5sum,
+        # ):
+        #     return
 
-        # cmd = f"aws s3 cp {file_path} {upload_url} --metadata 'md5sum={utils.md5sum(file_path)}'"
         self.logger.info(f"Uploading {file_path} to 's3://{bucket}/{key}'")
-        # self.logger.debug(f"Running command '{cmd}'.")
         if self.check_dry_run():
             return
 
