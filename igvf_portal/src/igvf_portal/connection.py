@@ -46,7 +46,6 @@ class PConnection(Connection):
     region_name: str
     record_lookups: dict[AccessionId | Alias | PortalId, IgvfRecord | tuple[()]]
     mode: IgvfMode
-    md5sums: dict[str, str]
 
     def __init__(
         self,
@@ -89,7 +88,6 @@ class PConnection(Connection):
         self.continue_on_failed_credentials = continue_on_failed_credentials
         self.record_lookups = {}
         self.mode = _igvf_mode
-        self.md5sums = {}
 
     @classmethod
     def new(
@@ -372,15 +370,17 @@ class PConnection(Connection):
             response_json = response_json["@graph"][0]
             # Some objects don't have an accession, i.e. replicates.
             # in original code "record_id" was frequently called "encid" (presumably encode id?)
-            record_id: str = response_json.get("accession", response_json["uuid"])
+            record_id: str = AccessionId(
+                response_json.get("accession", response_json["uuid"])
+            )
             self.logger.debug(f"Object posted with identifier: {record_id}")
             self._log_post(aliases=aliases, dacc_id=record_id)
-            md5sum = payload.get("md5sum", None)
-            if isinstance(md5sum, str) and len(md5sum) > 0:
-                self.md5sums[record_id] = md5sum
             # Run 'after' hooks:
-            self.after_submit_hooks(
-                record_id, profile.name, method=self.POST, upload_file=upload_file
+            self.guard_upload(
+                upload_file=upload_file,
+                profile=profile,
+                accession_id=record_id,
+                payload=payload,
             )
             if return_original_status_code is True:
                 return (response_json, original_status_code)
@@ -509,12 +509,10 @@ class PConnection(Connection):
         return_original_status_code: bool = False,
     ) -> tuple[dict[str, object], int | None] | dict[str, object]:
         if upload_duplicate:
-            record_id = cast(
-                str,
-                existing_record.get(
-                    "@id", existing_record.get("accession", aliases[0])
-                ),
+            accession_id = cast(
+                AccessionId, existing_record.get("accession", aliases[0])
             )
+            record_id = cast(str, existing_record.get("@id", accession_id))
             self.logger.warning(
                 f"Conflict when POSTing {record_id}, will patch any differences."
             )
@@ -524,14 +522,11 @@ class PConnection(Connection):
                 payload=payload,
                 existing_record=existing_record,
             )
-            md5sum = payload.get("md5sum", None)
-            if isinstance(md5sum, str) and len(md5sum) > 0:
-                self.md5sums[record_id] = md5sum
-            self.after_submit_hooks(
-                record_id,
-                profile.name,
-                method=self.POST,
+            self.guard_upload(
                 upload_file=upload_file,
+                profile=profile,
+                accession_id=accession_id,
+                payload=payload,
             )
             return (
                 (original_record, status_code)
@@ -559,7 +554,6 @@ class PConnection(Connection):
             requests.exceptions.HTTPError if credentials cannot be obtained
         """
         upload_credentials = self.regenerate_aws_upload_creds(file_id)
-        self.logger.debug(f"Creds={upload_credentials}")
         aws_creds = {
             "AWS_ACCESS_KEY_ID": upload_credentials["access_key"],
             "AWS_SECRET_ACCESS_KEY": upload_credentials["secret_key"],
@@ -627,9 +621,32 @@ class PConnection(Connection):
             )
         return already_uploaded
 
+    def guard_upload(
+        self,
+        upload_file: bool,
+        profile: IgvfSchema,
+        accession_id: AccessionId,
+        payload: dict[str, object],
+    ) -> None:
+        """Perform the upload if we are supposed to"""
+        if upload_file:
+            if profile.name in self.profiles.FILE_PROFILE_ID:
+                md5sum = payload.get("md5sum", None)
+                set_md5sum = (
+                    md5sum if isinstance(md5sum, str) and len(md5sum) > 0 else None
+                )
+                file_path = Path(str(payload[self.profiles.SUBMITTED_FILE_PROP_NAME]))
+                self.upload_file(
+                    file_id=accession_id, file_path=file_path, set_md5sum=set_md5sum
+                )
+            else:
+                self.logger.debug("No upload because record is not a file.")
+        else:
+            self.logger.debug("Skipping upload because upload is False")
+
     def upload_file(
         self,
-        file_id: str,
+        file_id: AccessionId,
         file_path: str | Path | None = None,
         set_md5sum: str | bool | None = None,
     ):
@@ -654,13 +671,7 @@ class PConnection(Connection):
               or a Google Storage object (i.e. gs://mybucket/test.txt).
               If not set, defaults to `None` in which case the local file path will be extracted from the
               record's `submitted_file_name` property.
-            set_md5sum: `bool`. True means to also calculate the md5sum and set the file record's `md5sum`
-              property on the Portal (this currently is only implemented for local files and S3; not yet GCP).
-              This will always take place whenever the property isn't yet set.
-              Furthermore, setting to True will also cause the `file_size` property to be set.
-              Normally these two properties would already be set as they are required in the *file* profile,
-              however, if the wrong file was originally uploaded, then they must be reset when
-              uploading a new file.
+            set_md5sum: Ignored unless it is a string. Then if non-empty it is the value of the file's local md5sum.
 
         Raises:
             igvf_utils.exceptions.FileUploadFailed: The return code of the AWS upload command was non-zero.
@@ -695,8 +706,9 @@ class PConnection(Connection):
             case _:
                 raise ValueError(f"Invalid type {type(file_path)} for file_path.")
 
-        md5sum = self.md5sums.get(file_id, None)
-        if md5sum is None:
+        if isinstance(set_md5sum, str) and len(set_md5sum) > 0:
+            md5sum = set_md5sum
+        else:
             md5sum = utils.md5sum(file_path)
         if self._is_already_uploaded(
             file_path=file_path,

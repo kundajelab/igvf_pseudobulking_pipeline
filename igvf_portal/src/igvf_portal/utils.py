@@ -62,6 +62,11 @@ def fix_igvf_logging(
     error_logger.propagate = False
     error_logger.handlers.clear()
     error_logger.addHandler(logging.NullHandler())
+    # At DEBUG the AWS SDK logs every signed S3 request with its headers, including the temporary
+    # session token, and a large upload makes tens of thousands of requests. Keep it at INFO, or at
+    # the requested level if that is quieter.
+    for aws_logger_name in ("botocore", "boto3", "s3transfer"):
+        logging.getLogger(aws_logger_name).setLevel(max(level, logging.INFO))
 
 
 def check_access_keys():

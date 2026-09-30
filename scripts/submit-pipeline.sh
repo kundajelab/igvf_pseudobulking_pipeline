@@ -18,7 +18,7 @@ queue="owners"
 profile="$(scripts/get-default-profile.sh)"
 workspace="$(scripts/get-default-workspace.sh)"
 mode="prod"
-dry_run_arg="--dry-run"
+dry_run_arg="--no-dry-run"
 
 function usage {
     cat << EOF
