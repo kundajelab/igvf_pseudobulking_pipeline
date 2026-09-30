@@ -16,7 +16,7 @@ include { MACS3 as MACS3_REP_2 } from './modules/MACS3.nf'
 include { MACS3 as MACS3_REP_T } from './modules/MACS3.nf'
 include { CALL_PEAKS } from './modules/CALL_PEAKS.nf'
 include { PSEUDOBULK_RNA } from './modules/PSEUDOBULK_RNA.nf'
-include { SUMMARIZE_PSEUDOBULK_QC } from './modules/SUMMARIZE_PSEUDOBULK_QC.nf'
+include { SUMMARIZE_PSEUDOBULK_QC ; batchPseudobulkQcInputs } from './modules/SUMMARIZE_PSEUDOBULK_QC.nf'
 include { COMBINE_ACCESSION_QC } from './modules/COMBINE_ACCESSION_QC.nf'
 include { COLLECT_PSEUDOBULK_QC } from './modules/COLLECT_PSEUDOBULK_QC.nf'
 include { WRITE_SUMMARY } from './modules/WRITE_SUMMARY.nf'
@@ -236,7 +236,12 @@ workflow {
     // hence SPLIT_FRAGMENTS never ran) SUMMARIZE_PSEUDOBULK_QC would never be called. Use ifEmpty to
     // supply an empty list in that case, so the RNA-only QC is still summarized.
     atac_qc_files = SPLIT_FRAGMENTS.out.atac_qc_files.collect(sort: true, flat: true).ifEmpty([])
-    SUMMARIZE_PSEUDOBULK_QC(summarize_qc_in_ch, atac_qc_files, metadata_file)
+
+    SUMMARIZE_PSEUDOBULK_QC(
+        batchPseudobulkQcInputs(summarize_qc_in_ch, params.summarize_pseudobulk_qc_batch_size),
+        atac_qc_files,
+        metadata_file
+    )
     // concatenate all the per-pseudobulk summary QCs and publish, keeping only the first header
     COLLECT_PSEUDOBULK_QC(SUMMARIZE_PSEUDOBULK_QC.out.qc_summary_out.collect())
 
