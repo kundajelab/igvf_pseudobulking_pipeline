@@ -81,8 +81,7 @@ process IGVF_UPLOAD {
         --metadata-file "${metadata_file}" \
         --annotations-tsv "${cell_name_to_annotation_mapping}" \
         ${dry_run ? "--dry-run" : "--no-dry-run"} \
-        --igvf-mode "${igvf_mode}" \
-        --log-level debug
+        --igvf-mode "${igvf_mode}"
 
     1>&2 echo "Running upload script:"
     ./upload.sh
