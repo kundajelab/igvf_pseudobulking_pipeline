@@ -102,7 +102,11 @@ def _add_status_conditional_formatting(
             f'=${status_col_letter}2="upload status not validated"',
             _STATUS_ROW_COLORS["orange"],
         ),
-        ("=TRUE", _STATUS_ROW_COLORS["yellow"]),
+        (
+            f'=${status_col_letter}2="unattempted"',
+            _STATUS_ROW_COLORS["yellow"],
+        ),
+        ("=TRUE", _STATUS_ROW_COLORS["red"]),
     )
     grid_range = {
         "sheetId": worksheet.id,
