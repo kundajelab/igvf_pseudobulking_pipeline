@@ -206,7 +206,7 @@ class ScaleInfo:
         """Convert unscaled value to symlog. Class method assumes log_scale is not None."""
         abs_val = abs(val)
         return (
-            val
+            float(val)
             if abs_val < log_scale
             else np.sign(val)
             * (log_scale + np.log1p((abs_val - log_scale) / cls.ln_10) / cls.ln_10)
@@ -341,6 +341,20 @@ def _get_outliers(
     scale_info: ScaleInfo,
     max_outliers: int,
 ) -> tuple[pl.Series, pl.Series]:
+    """
+
+    Args:
+        property_values: y-values of data to extract outliers from.
+        index: x-values corresponding to the property values.
+        low: threshold below which a point is an outlier.
+        high: threshold above which a point is an outlier.
+        scale_info: object that provides a transform to sym-log scale if needed.
+        max_outliers: maximum number of outliers to return. If there are more than this, return an
+            even sampling of the outliers (by quantile).
+    Returns:
+        property_outliers: scaled y-values of outlier properties.
+        index_outliers: corresponding x-values of outliers.
+    """
     is_outlier = (property_values > high) | (property_values < low)
     outliers = property_values.filter(is_outlier)
     index = index.filter(is_outlier)
@@ -350,13 +364,16 @@ def _get_outliers(
     else:
         dtype = outliers.dtype if scale_info.log_scale is None else pl.Float64
         if len(outliers) > max_outliers:
+            # get filter_idx, the indices that get even spacing of the y-values in quantile-space
             idx = np.round(np.linspace(0, len(outliers) - 1, max_outliers)).astype(
                 np.uint64
             )
             filter_idx = outliers.arg_sort().gather(idx)
-            return outliers.gather(filter_idx).map_elements(
+            # extract the corresponding x-values and scaled y-values
+            property_outliers = outliers.gather(filter_idx).map_elements(
                 scale_info.scale, return_dtype=dtype
-            ), index.gather(filter_idx)
+            )
+            return property_outliers, index.gather(filter_idx)
         else:
             return outliers.map_elements(scale_info.scale, return_dtype=dtype), index
 
