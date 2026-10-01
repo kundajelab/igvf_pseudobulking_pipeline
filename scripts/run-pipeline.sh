@@ -6,6 +6,7 @@ repo_dir=$(dirname "$script_dir")
 pushd &> /dev/null "$repo_dir"
 
 queue="owners"
+partition="normal"
 profile="$(scripts/get-default-profile.sh)"
 workspace="$(scripts/get-default-workspace.sh)"
 mode="prod"
@@ -24,6 +25,7 @@ Run the pipeline with specified metadata.
 ARGS:
     -h|--help: Show this message and exit.
     -p|--profile: Use comma-separated nextflow profiles. Defaults to inferred from environment ($profile)
+    -P|--partition: Partition to run non-preemptible jobs on. Default: $partition
     -q|--queue: If running via SLURM, use this queue. Default: $queue
     -w|--workspace: Where to output files. Defaults to inferred from environment ($workspace)
     -a|--principal-analysis: Specify the accession of the principal analysis set
@@ -148,6 +150,7 @@ nextflow run "$repo_dir/main.nf" \
     --principal_analysis "$principal_analysis" \
     --workspace "$workspace" \
     --slurm_queue "$queue" \
+    --non_preemptable_queue "$partition" \
     -profile "$profile" \
     --igvf_mode "$mode" \
     --igvf_dry_run "$igvf_dry_run" \

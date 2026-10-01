@@ -155,7 +155,11 @@ else
     fi
 fi
 
-run_args=("--profile" "$profile" "--workspace" "$workspace" "--queue" "$queue" "--principal-analysis" "$principal_analysis" "--mode" "$mode" "$dry_run_arg" "--" "$metadata" "${@}")
+run_args=(\
+    "--profile" "$profile" "--workspace" "$workspace" "--queue" "$queue" --partition "$partition" \
+    "--principal-analysis" "$principal_analysis" "--mode" "$mode" "$dry_run_arg" \
+    "--" "$metadata" "${@}"\
+)
 run_args_quoted=$(printf '%q ' "${run_args[@]}")
 
 job_name=igvf-pseudobulk/$principal_analysis

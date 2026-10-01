@@ -162,7 +162,7 @@ nextflow_args=("${@}")
 # the nextflow head process rather than something that submits one.
 run_args=(\
     "--profile" "$profile" "--workspace" "$workspace" \
-    "--queue" "$queue" "--mode" "$mode" "$dry_run_arg"
+    "--queue" "$queue" "--partition" "$partition" "--mode" "$mode" "$dry_run_arg"
 )
 run_args_quoted_str=$(printf '%q ' "${run_args[@]}")
 # printf runs its format once even with no arguments, so an empty nextflow_args would still yield
