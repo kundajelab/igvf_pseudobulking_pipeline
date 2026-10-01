@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Iterable
 from contextlib import nullcontext
 from multiprocessing.synchronize import Lock as ProcessLock
@@ -37,6 +38,25 @@ from igvf_portal.types import (
     PortalId,
     RecordNotFound,
 )
+
+# An IGVF accession ("IGVF", two letters for the record type, four digits, four letters) names
+# exactly one record, and an accessioned record's @id is /<collection>/<accession>/. So the
+# accession can be read straight off either form, with no request to the Portal.
+_ACCESSION_PATTERN = r"IGVF[A-Z]{2}\d{4}[A-Z]{4}"
+_ACCESSION = re.compile(_ACCESSION_PATTERN)
+_ACCESSIONED_PATH = re.compile(rf"(?:/[a-z-]+)?/({_ACCESSION_PATTERN})/")
+
+
+def _local_accession(value: str) -> str | None:
+    """Return the accession a value names, if it can be read off without asking the Portal.
+
+    Handles a bare accession and a path ending in one, such as /tissues/IGVFSM0104SYAP/ or
+    /IGVFSM0104SYAP/. Aliases, UUIDs, and paths of records without accessions return None.
+    """
+    if _ACCESSION.fullmatch(value):
+        return value
+    match = _ACCESSIONED_PATH.fullmatch(value)
+    return match.group(1) if match else None
 
 
 class PConnection(Connection):
@@ -120,24 +140,34 @@ class PConnection(Connection):
         return self.dry_run
 
     def _id_for_compare(self, value: str) -> str:
-        """Resolve an identifier (alias, accession, or path) to the record's @id, caching the answer.
+        """Reduce an identifier to a key that is equal exactly when two identifiers name one record.
 
-        Only @id is needed, so use frame=object: in submission mode an embedded GET renders every
-        linked record from the database, which is slow enough under load to time out. Answers go in
-        their own cache rather than record_lookups, because lookup_record callers expect the
-        embedded fields that frame=object omits.
+        The key is the record's accession if it has one, otherwise its @id. An accession or a path
+        ending in one is reduced locally; aliases, UUIDs, and paths of records without accessions
+        are looked up once and the answer cached. Answers go in their own cache rather than
+        record_lookups, because lookup_record callers expect the embedded fields that frame=object
+        omits.
         """
+        accession = _local_accession(value)
+        if accession is not None:
+            return accession
         cached = self._ids_for_compare.get(value)
         if cached is not None:
             return cached
-        record = self.get(value, frame="object")
+        # Ask the search index first: it is fast, and safe here because a record's @id never changes.
+        # Building a record from the database can take over a minute for a heavily linked one (a
+        # tissue linked by many file sets), so only use it for a record the index does not have
+        # yet, such as one created moments ago.
+        record = self.get(value, frame="object", database=False)
+        if record is None:
+            record = self.get(value, frame="object", database=True)
         if record is None:
             raise RecordNotFound(f"Could not find record for '{value}'")
         record_id = cast(str, record["@id"])
-        # the existing record's side of a comparison holds @ids, so remember those too
-        self._ids_for_compare[value] = record_id
-        self._ids_for_compare[record_id] = record_id
-        return record_id
+        key = _local_accession(record_id) or record_id
+        self._ids_for_compare[value] = key
+        self._ids_for_compare[record_id] = key
+        return key
 
     def _named_individual_props_equal[T](self, key: str, prop1: T, prop2: T) -> bool:
         if prop1 == prop2:
@@ -174,7 +204,9 @@ class PConnection(Connection):
             case dict(d_value):
                 value_id = d_value.get("@id", None)
                 if value_id is not None:
-                    return cast(str, value_id)
+                    # an embedded record's @id is canonical, so reduce it locally without a lookup
+                    value_id = cast(str, value_id)
+                    return _local_accession(value_id) or value_id
                 return value
             case str(s_value):
                 if key in lookup_props:
@@ -805,7 +837,7 @@ class PConnection(Connection):
             f"Successfully uploaded '{file_path}' to 's3://{bucket}/{key}'."
         )
 
-    def get(self, rec_ids, database=False, ignore404=True, frame=None):
+    def get(self, rec_ids, database=None, ignore404=True, frame=None):
         """GET a record from the Portal.
 
         Looks up a record in the Portal and performs a GET request, returning the JSON serialization of
@@ -832,8 +864,8 @@ class PConnection(Connection):
             `requests.exceptions.HTTPError`: The status code is not ok, and the
                 cause isn't due to a 404 (not found) status code when ``ignore404=True``.
         """
-        if self.submission:
-            database = True
+        if database is None:
+            database = self.submission
         if isinstance(rec_ids, str):
             rec_ids = [rec_ids]
         status_codes = {}
@@ -896,7 +928,7 @@ class PConnection(Connection):
     def lookup_record[T: AccessionId | Alias | PortalId](
         self,
         key: T | list[T],
-        database: bool = False,
+        database: bool | None = None,
         ignore404: bool = True,
         frame: str | None = None,
         cache_negative: bool = False,
@@ -908,7 +940,7 @@ class PConnection(Connection):
                 For a few example identifiers, you can use a uuid, accession, ..., or even the value of
                 a record's `@id` property.
             database: `bool`. If True, then search the database directly instead of the Elasticsearch.
-                 indices. Always True when in submission mode (`self.submission` is True).
+                 indices. Default True when in submission mode (`self.submission` is True), otherwise False
             frame: `str`. A value for the frame query parameter, i.e. 'object', 'edit'.
             ignore404: `bool`. Only matters when none of the passed in record IDs were found on the
                 Portal.  In this case, If set to `True`, then None will be returned.
