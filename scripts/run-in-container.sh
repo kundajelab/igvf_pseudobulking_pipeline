@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-tag="$(git describe --tags --abbrev=0)"
+script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+#tag="$(git describe --tags --abbrev=0)"
 project="all"
 workspace="$(scripts/get-default-workspace.sh)"
 apptainer_cache_dir="$workspace/apptainer_cache"
@@ -18,7 +20,7 @@ To run interactively pass the bash command (or some other shell).
 ARGS:
     -h|--help: Show this message and exit.
     -p|--project: project name for apptainer image
-    -t|--tag: docker/apptainer image tag ($tag)
+    -t|--tag: docker/apptainer image tag. Defaults to the tag in the repo .env file.
     -c|--cache: Where apptainer images are cached. Defaults to inferred from environment ($apptainer_cache_dir)
 EOF
 }
@@ -59,11 +61,28 @@ function pull {
     # first pull the image with minimal nuisance warnings
     local -r project="$1"
     1>&2 echo "Pulling $project"
+    if [[ -z "${tag+x}" ]]; then
+        # tag isn't defined, get it from .env
+        local -r pull_tag="$("$script_dir/get-project-tag.sh" "$project")"
+    else
+        local -r pull_tag="$tag"
+    fi
+
+    if [[ "$pull_tag" =~ sha256 ]]; then
+        local -r apptainer_img="$apptainer_cache_dir/kundajelab-${project}@${pull_tag//:/-}.img"
+        local -r remote_img="docker://kundajelab/${project}@$pull_tag"
+    else
+        local -r apptainer_img="$apptainer_cache_dir/kundajelab-${project}-$pull_tag.img"
+        local -r remote_img="docker://kundajelab/${project}:$pull_tag"
+    fi
     apptainer pull \
         -F \
-        "$apptainer_cache_dir/kundajelab-${project}-$tag.img" \
-        "docker://kundajelab/${project}:$tag" \
+        "$apptainer_img" \
+        "$remote_img" \
+        1>&2 \
         2> >(grep -v "harmless EPERM" >&2)
+
+    echo "$apptainer_img"
 }
 
 if [[ "$project" == "all" ]]; then
@@ -79,10 +98,10 @@ if [[ "$project" == "all" ]]; then
         pull "$project"
     done < <("$script_dir/find-projects.sh")
 else
-    pull "$project"
+    apptainer_img=$(pull "$project")
 
     if [[ "$#" -gt 0 ]]; then
         command="${*}"
-        apptainer run "$apptainer_cache_dir/kundajelab-${project}-$tag.img" "${command[@]}"
+        apptainer run "$apptainer_img" "${command[@]}"
     fi
 fi

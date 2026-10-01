@@ -1,4 +1,6 @@
 import json
+import re
+from collections.abc import Iterable
 from contextlib import nullcontext
 from multiprocessing.synchronize import Lock as ProcessLock
 from pathlib import Path
@@ -19,11 +21,42 @@ from igvf_utils.exceptions import (
 )
 from igvf_utils.profiles import IgvfSchema
 from mypy_boto3_s3 import S3Client
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from igvf_portal import utils
-from igvf_portal.enums import IgvfMode
+from igvf_portal.constants import VERSION
+from igvf_portal.enums import (
+    AnalysisStep,
+    IgvfMode,
+)
 from igvf_portal.parallel_logger import ParallelLogger
-from igvf_portal.types import IgvfRecord
+from igvf_portal.types import (
+    AccessionId,
+    Alias,
+    IgvfRecord,
+    PortalId,
+    RecordNotFound,
+)
+
+# An IGVF accession ("IGVF", two letters for the record type, four digits, four letters) names
+# exactly one record, and an accessioned record's @id is /<collection>/<accession>/. So the
+# accession can be read straight off either form, with no request to the Portal.
+_ACCESSION_PATTERN = r"IGVF[A-Z]{2}\d{4}[A-Z]{4}"
+_ACCESSION = re.compile(_ACCESSION_PATTERN)
+_ACCESSIONED_PATH = re.compile(rf"(?:/[a-z-]+)?/({_ACCESSION_PATTERN})/")
+
+
+def _local_accession(value: str) -> str | None:
+    """Return the accession a value names, if it can be read off without asking the Portal.
+
+    Handles a bare accession and a path ending in one, such as /tissues/IGVFSM0104SYAP/ or
+    /IGVFSM0104SYAP/. Aliases, UUIDs, and paths of records without accessions return None.
+    """
+    if _ACCESSION.fullmatch(value):
+        return value
+    match = _ACCESSIONED_PATH.fullmatch(value)
+    return match.group(1) if match else None
 
 
 class PConnection(Connection):
@@ -31,28 +64,52 @@ class PConnection(Connection):
     logger: ParallelLogger
     continue_on_failed_credentials: bool
     region_name: str
+    record_lookups: dict[AccessionId | Alias | PortalId, IgvfRecord | tuple[()]]
+    _ids_for_compare: dict[str, str]
+    mode: IgvfMode
 
     def __init__(
         self,
-        igvf_mode: IgvfMode,
+        igvf_mode: IgvfMode | str,
         submission: bool = False,
         dry_run: bool = False,
         lock: ThreadLock | ProcessLock | nullcontext | None = None,
         continue_on_failed_credentials: bool = True,
         region_name: str = "us-west-2",
     ):
+        _igvf_mode = (
+            igvf_mode if isinstance(igvf_mode, IgvfMode) else IgvfMode[igvf_mode]
+        )
         super().__init__(
-            igvf_mode=igvf_mode,
+            igvf_mode=_igvf_mode,
             submission=submission,
             dry_run=dry_run,
             no_log_file=True,
         )
 
+        # create a session that retries common network problems
+        retry = Retry(
+            total=3,
+            read=3,  # retries on read timeout
+            connect=3,  # retries on connection timeout
+            status=2,
+            backoff_factor=5,  # wait 0s,5s, 10s, 20s between retries
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],  # urllib3 ≥ 1.26
+            raise_on_status=False,
+        )
+        session = requests.Session()
+        session.mount("https://", HTTPAdapter(max_retries=retry))
+        session.mount("http://", HTTPAdapter(max_retries=retry))
+
         self.region_name = region_name
-        self.session = requests.Session()
+        self.session = session
         self.session.auth = self.auth
         self.logger = ParallelLogger.new(logger=self.debug_logger, lock=lock)
         self.continue_on_failed_credentials = continue_on_failed_credentials
+        self.record_lookups = {}
+        self._ids_for_compare = {}
+        self.mode = _igvf_mode
 
     @classmethod
     def new(
@@ -82,6 +139,36 @@ class PConnection(Connection):
     def check_dry_run(self) -> bool:
         return self.dry_run
 
+    def _id_for_compare(self, value: str) -> str:
+        """Reduce an identifier to a key that is equal exactly when two identifiers name one record.
+
+        The key is the record's accession if it has one, otherwise its @id. An accession or a path
+        ending in one is reduced locally; aliases, UUIDs, and paths of records without accessions
+        are looked up once and the answer cached. Answers go in their own cache rather than
+        record_lookups, because lookup_record callers expect the embedded fields that frame=object
+        omits.
+        """
+        accession = _local_accession(value)
+        if accession is not None:
+            return accession
+        cached = self._ids_for_compare.get(value)
+        if cached is not None:
+            return cached
+        # Ask the search index first: it is fast, and safe here because a record's @id never changes.
+        # Building a record from the database can take over a minute for a heavily linked one (a
+        # tissue linked by many file sets), so only use it for a record the index does not have
+        # yet, such as one created moments ago.
+        record = self.get(value, frame="object", database=False)
+        if record is None:
+            record = self.get(value, frame="object", database=True)
+        if record is None:
+            raise RecordNotFound(f"Could not find record for '{value}'")
+        record_id = cast(str, record["@id"])
+        key = _local_accession(record_id) or record_id
+        self._ids_for_compare[value] = key
+        self._ids_for_compare[record_id] = key
+        return key
+
     def _named_individual_props_equal[T](self, key: str, prop1: T, prop2: T) -> bool:
         if prop1 == prop2:
             return True
@@ -94,10 +181,12 @@ class PConnection(Connection):
             "input_file_sets",
         }:
             return False
+        if not (isinstance(prop1, str) and isinstance(prop2, str)):
+            return False
         # maybe we need to look these up and compare IDs, as opposed to comparing an alias to an accession
         try:
-            return self.get(prop1)["@id"] == self.get(prop2)["@id"]
-        except Exception:
+            return self._id_for_compare(prop1) == self._id_for_compare(prop2)
+        except RecordNotFound:
             return False
 
     def _lookup_id_for_compare[T](self, key: str, value: T) -> T | str:
@@ -115,13 +204,18 @@ class PConnection(Connection):
             case dict(d_value):
                 value_id = d_value.get("@id", None)
                 if value_id is not None:
-                    return cast(str, value_id)
+                    # an embedded record's @id is canonical, so reduce it locally without a lookup
+                    value_id = cast(str, value_id)
+                    return _local_accession(value_id) or value_id
                 return value
             case str(s_value):
                 if key in lookup_props:
+                    # Only a record that genuinely does not exist falls back to the raw value. Any
+                    # other failure (timeout, server error) propagates: treating it as "different"
+                    # would PATCH a record that did not need it.
                     try:
-                        return self.get(s_value)["@id"]
-                    except Exception:
+                        return self._id_for_compare(s_value)
+                    except RecordNotFound:
                         pass
                 return value
             case _:
@@ -152,23 +246,27 @@ class PConnection(Connection):
         profile: IgvfSchema,
         payload: dict[str, object],
         existing_record: dict[str, object],
-    ) -> None:
+    ) -> tuple[dict[str, object], int | None]:
         """Change attempted POST that had a conflict into a patch."""
         changed = False
-        changed_props = set()
+        changed_props = {}
         added_props = set()
         removed_props = set()
+        original_record = {**existing_record}
         for key, value in payload.items():
             if key in {self.IGVFID_KEY, self.PROFILE_KEY}:
                 continue
+            prop = profile.get_property_from_name(key)
             if existing_record.get(key, None) is None:
-                changed = True
-                added_props.add(key)
-                existing_record[key] = value
+                if not prop.is_not_submittable:
+                    changed = True
+                    added_props.add(key)
+                    existing_record[key] = value
             elif not self._props_equal(key, existing_record[key], value):
-                changed = True
-                existing_record[key] = value
-                changed_props.add(key)
+                if not (prop.is_not_submittable or prop.is_read_only):
+                    changed = True
+                    changed_props[key] = existing_record[key]
+                    existing_record[key] = value
         to_remove_props = set(existing_record.keys()).difference(payload.keys())
         for key in to_remove_props:
             prop = profile.get_property_from_name(key)
@@ -183,9 +281,9 @@ class PConnection(Connection):
             self.logger.info(
                 f"No changes to existing record for '{record_id}', leaving as-is."
             )
-            return
+            return original_record, None
 
-        url = iuu.url_join([self.igvf_mode.url, record_id.lstrip("/")])
+        url = iuu.url_join([self.mode.url, record_id.lstrip("/")])
         response = self.session.put(
             url,
             timeout=iu.TIMEOUT,
@@ -195,18 +293,26 @@ class PConnection(Connection):
         )
         response_json = response.json()
 
+        lines: list[str] = []
+        if len(removed_props) > 0:
+            lines.append(f"\tremoved: {','.join(prop for prop in removed_props)}")
+        if len(added_props) > 0:
+            lines.append(
+                f"\tadded: {','.join(f'{prop}={existing_record[prop]}' for prop in added_props)}"
+            )
+        if len(changed_props) > 0:
+            lines.append(
+                f"changed: {','.join(f'{prop}:{old_val}->{existing_record[prop]}' for prop, old_val in changed_props.items())}"
+            )
         if response.ok:
-            self.logger.info(
-                f"Successfully PUT {record_id}.\n"
-                f"\tadded {','.join(added_props)}; changed {','.join(changed_props)}; removed {','.join(removed_props)}\n"
-            )
+            lines.insert(0, f"Successfully PUT {record_id}.")
+            self.logger.info("\n".join(lines))
         else:
-            self.logger.error(
-                f"Failed to PUT {record_id}\n"
-                f"\tadded {','.join(added_props)}; changed {','.join(changed_props)}; removed {','.join(removed_props)}\n"
-                f"{iuu.print_format_dict(response_json)}"
-            )
+            lines.insert(0, f"Failed to PUT {record_id}.")
+            lines.append(f"{iuu.print_format_dict(response_json)}")
+            self.logger.error("\n".join(lines))
             response.raise_for_status()
+        return original_record, response.status_code
 
     def post(
         self,
@@ -216,6 +322,7 @@ class PConnection(Connection):
         return_original_status_code: bool = False,
         truncate_long_strings_in_payload_log: bool = False,
         upload_duplicate: bool = True,
+        expect_patch: bool = False,
     ):
         """POST a record to the Portal.
 
@@ -253,6 +360,8 @@ class PConnection(Connection):
                 will be truncated before being logged.
             upload_duplicate: If True, upload file when a duplicate record exists. Used when
                 errors allowed POSTing the record but not uploading the file.
+            expect_patch: If True, then check for an existing record before attempting to post, and
+                skip immediately to creating a patch if it does.
 
         Returns:
             `dict`: The JSON response from the POST operation, or the existing record if it already
@@ -275,12 +384,117 @@ class PConnection(Connection):
             will be popped out. Furthermore, self.IGVFID_KEY will be popped out if present in the payload.
         """
         self.logger.debug("\nIN post().")
+
+        payload, profile, no_alias, aliases = self._prep_and_validate_payload(
+            payload=payload, require_aliases=require_aliases
+        )
+        url = iuu.url_join([self.mode.url, profile.name])
+
+        self.logger.debug(
+            (
+                f"POST {profile.name} record {aliases[0]} To IGVF database with URL {url} and this payload:\n"
+                f"{iuu.print_format_dict(payload, truncate_long_strings=truncate_long_strings_in_payload_log)}"
+            )
+        )
+
+        if self.check_dry_run():
+            return {}
+        if expect_patch and not no_alias:
+            existing_record = self.get(rec_ids=aliases, ignore404=True, frame="edit")
+            if existing_record is not None:
+                # try to immediately go for a patch
+                return self._handle_conflict(
+                    payload=payload,
+                    existing_record=existing_record,
+                    aliases=aliases,
+                    profile=profile,
+                    upload_file=upload_file,
+                    upload_duplicate=upload_duplicate,
+                    return_original_status_code=return_original_status_code,
+                )
+
+        # try to post de-novo
+        response = self.session.post(
+            url,
+            timeout=iu.TIMEOUT,
+            headers=iuu.REQUEST_HEADERS_JSON,
+            json=payload,
+            verify=False,
+        )
+        response_json = response.json()
+        original_status_code = response.status_code
+
+        if response.ok:
+            self.logger.debug("Success.")
+            response_json = response_json["@graph"][0]
+            # Some objects don't have an accession, i.e. replicates.
+            # in original code "record_id" was frequently called "encid" (presumably encode id?)
+            record_id: str = AccessionId(
+                response_json.get("accession", response_json["uuid"])
+            )
+            self.logger.debug(f"Object posted with identifier: {record_id}")
+            self._log_post(aliases=aliases, dacc_id=record_id)
+            # Run 'after' hooks:
+            self.guard_upload(
+                upload_file=upload_file,
+                profile=profile,
+                accession_id=record_id,
+                payload=payload,
+            )
+            if return_original_status_code is True:
+                return (response_json, original_status_code)
+            return response_json
+        elif response.status_code == requests.codes.CONFLICT:
+            # In the case of paired-end FASTQ files, it could also mean that there was a conflict
+            # related to the 'paired_with' property, i.e. the latter is already linked to a FASTQ
+            # file, which could even have been set to a deleted state on the Portal. The server
+            # response in either case would look something like this:
+            #
+            # {
+            #   'detail': "Keys conflict: [('file:paired_with', 'f39320d9-0970-4369-b680-5965a5e85b6f')]",
+            #   'description': 'There was a conflict when trying to complete your request.',
+            #   'code': 409,
+            #   '@type': ['HTTPConflict', 'Error'],
+            #   'title': 'Conflict',
+            #   'status': 'error'}
+            # }
+            #
+            if no_alias:
+                self.logger.warning(response_json)
+                response.raise_for_status()
+            else:
+                existing_record = self.get(
+                    rec_ids=aliases, ignore404=True, frame="edit"
+                )
+                if existing_record is None:
+                    self.logger.warning(response_json)
+                    response.raise_for_status()
+                return self._handle_conflict(
+                    payload=payload,
+                    existing_record=existing_record,
+                    aliases=aliases,
+                    profile=profile,
+                    upload_file=upload_file,
+                    upload_duplicate=upload_duplicate,
+                    return_original_status_code=return_original_status_code,
+                )
+
+        else:
+            self.logger.error(
+                f"Failed to POST {aliases[0]}\n{iuu.print_format_dict(response_json)}"
+            )
+            response.raise_for_status()
+
+    def _prep_and_validate_payload(
+        self,
+        payload: dict[str, object],
+        require_aliases: bool,
+    ) -> tuple[dict[str, object], IgvfSchema, bool, list[Alias]]:
         # Make sure we have a payload that can be converted to valid JSON, and
         # tuples become arrays, ...
         payload = json.loads(json.dumps(payload))
         profile = self.get_profile_from_payload(payload)
         payload[self.PROFILE_KEY] = profile.name
-        url = iuu.url_join([self.igvf_mode.url, profile.name])
         if self.IGVFID_KEY in payload:
             # Shouldn't be here, unless maybe a PATCH was attempted and the record didn't exist, so
             # a POST was then attempted.
@@ -298,22 +512,22 @@ class PConnection(Connection):
 
         # Run 'before' hooks:
         payload = self.before_submit_hooks(payload, method=self.POST)
+
         # Remove the non-schematic self.PROFILE_KEY if being used, which was added above since some
         # 'before' hooks may need it. Also check for the `@id` property and remove it too if found.
-        try:
-            payload.pop(self.PROFILE_KEY)
-        except KeyError:
-            pass
-        try:
-            payload.pop("@id")
-        except KeyError:
-            pass
+        def _is_wanted_key(_k: str) -> bool:
+            if _k in {self.PROFILE_KEY, "@id"}:
+                return False
+            _prop = profile.get_property_from_name(_k)
+            return not (_prop.is_not_submittable or _prop.is_read_only)
+
+        payload = {k: v for k, v in payload.items() if _is_wanted_key(k)}
 
         no_alias = False  # Use this to check later if doing a GET
-        aliases = payload.get(iu.ALIAS_PROP_NAME)
+        aliases = cast(list[Alias], payload.get(iu.ALIAS_PROP_NAME))
         if not aliases:
             if not profile.has_alias or not require_aliases:
-                aliases = ["N/A"]
+                aliases = [Alias("N/A")]
                 no_alias = True
             else:
                 raise MissingAlias(
@@ -341,98 +555,51 @@ class PConnection(Connection):
                 self.logger.error(iuu.print_format_dict(validation_error[1]))
             raise Exception(iuu.print_format_dict(validation_error[0]))
 
-        self.logger.debug(
-            (
-                f"POST {profile.name} record {aliases[0]} To IGVF database with URL {url} and this payload:\n"
-                f"{iuu.print_format_dict(payload, truncate_long_strings=truncate_long_strings_in_payload_log)}"
+        return payload, profile, no_alias, aliases
+
+    def _handle_conflict(
+        self,
+        payload: dict[str, object],
+        existing_record: dict[str, object],
+        aliases: list[Alias],
+        profile: IgvfSchema,
+        upload_file: bool = True,
+        upload_duplicate: bool = True,
+        return_original_status_code: bool = False,
+    ) -> tuple[dict[str, object], int | None] | dict[str, object]:
+        if upload_duplicate:
+            accession_id = cast(
+                AccessionId, existing_record.get("accession", aliases[0])
             )
-        )
-
-        if self.check_dry_run():
-            return {}
-        response = self.session.post(
-            url,
-            timeout=iu.TIMEOUT,
-            headers=iuu.REQUEST_HEADERS_JSON,
-            json=payload,
-            verify=False,
-        )
-        response_json = response.json()
-        original_status_code = response.status_code
-
-        if response.ok:
-            self.logger.debug("Success.")
-            response_json = response_json["@graph"][0]
-            # Some objects don't have an accession, i.e. replicates.
-            # in original code "record_id" was frequently called "encid" (presumably encode id?)
-            record_id: str = response_json.get("accession", response_json["uuid"])
-            self.logger.debug(f"Object posted with identifier: {record_id}")
-            self._log_post(aliases=aliases, dacc_id=record_id)
-            # Run 'after' hooks:
-            self.after_submit_hooks(
-                record_id, profile.name, method=self.POST, upload_file=upload_file
+            record_id = cast(str, existing_record.get("@id", accession_id))
+            self.logger.warning(
+                f"Conflict when POSTing {record_id}, will patch any differences."
             )
-            if return_original_status_code is True:
-                return (response_json, original_status_code)
-            return response_json
-        elif response.status_code == requests.codes.CONFLICT:
-            # In the case of paired-end FASTQ files, it could also mean that there was a conflict
-            # related to the 'paired_with' property, i.e. the latter is already linked to a FASTQ
-            # file, which could even have been set to a deleted state on the Portal. The server
-            # response in either case would look something like this:
-            #
-            # {
-            #   'detail': "Keys conflict: [('file:paired_with', 'f39320d9-0970-4369-b680-5965a5e85b6f')]",
-            #   'description': 'There was a conflict when trying to complete your request.',
-            #   'code': 409,
-            #   '@type': ['HTTPConflict', 'Error'],
-            #   'title': 'Conflict',
-            #   'status': 'error'}
-            # }
-            #
-            if no_alias:
-                self.logger.warning(response_json)
-                response.raise_for_status()
-            else:
-                existing_record = self.get(
-                    rec_ids=aliases, ignore404=False, frame="edit"
-                )
-                if not existing_record:
-                    self.logger.warning(response_json)
-                    response.raise_for_status()
-                else:
-                    if upload_duplicate:
-                        record_id: str = existing_record.get(
-                            "@id", existing_record.get("accession", aliases[0])
-                        )
-                        self.logger.warning(
-                            f"Conflict when POSTing {record_id}, will patch any differences."
-                        )
-                        self._patch_in_post(
-                            record_id=record_id,
-                            profile=profile,
-                            payload=payload,
-                            existing_record=existing_record,
-                        )
-                        self.after_submit_hooks(
-                            record_id,
-                            profile.name,
-                            method=self.POST,
-                            upload_file=upload_file,
-                        )
-                    else:
-                        self.logger.error(
-                            f"Will not POST '{aliases[0]}' since it already exists with aliases '{existing_record['aliases']}'."
-                        )
-                    if return_original_status_code is True:
-                        return (existing_record, original_status_code)
-                    return existing_record
-
+            original_record, status_code = self._patch_in_post(
+                record_id=record_id,
+                profile=profile,
+                payload=payload,
+                existing_record=existing_record,
+            )
+            self.guard_upload(
+                upload_file=upload_file,
+                profile=profile,
+                accession_id=accession_id,
+                payload=payload,
+                original_record=original_record,
+            )
+            return (
+                (original_record, status_code)
+                if return_original_status_code
+                else original_record
+            )
         else:
             self.logger.error(
-                f"Failed to POST {aliases[0]}\n{iuu.print_format_dict(response_json)}"
+                f"Will not POST '{aliases[0]}' since it already exists with aliases '{existing_record['aliases']}'."
             )
-            response.raise_for_status()
+        return (
+            (existing_record, None) if return_original_status_code else existing_record
+        )
 
     def _regenerate_s3_client(self, file_id: str) -> tuple[str, str, S3Client]:
         """Get a client for uploading the specified client to S3.
@@ -447,7 +614,6 @@ class PConnection(Connection):
             requests.exceptions.HTTPError if credentials cannot be obtained
         """
         upload_credentials = self.regenerate_aws_upload_creds(file_id)
-        self.logger.debug(f"Creds={upload_credentials}")
         aws_creds = {
             "AWS_ACCESS_KEY_ID": upload_credentials["access_key"],
             "AWS_SECRET_ACCESS_KEY": upload_credentials["secret_key"],
@@ -473,6 +639,7 @@ class PConnection(Connection):
         bucket: str,
         key: str,
         s3_client: S3Client,
+        local_md5_sum: str,
     ) -> bool:
         # subprocess_result = subprocess.run(
         #     f"aws s3api head-object --bucket '{bucket}' --key '{key}'",
@@ -485,11 +652,11 @@ class PConnection(Connection):
         #     return False
         # result = json.loads(subprocess_result.stdout)
 
-        self.logger.info(f"Getting head info for Bucket={bucket}, Key={key}")
+        self.logger.debug(f"Getting head info for Bucket={bucket}, Key={key}")
         try:
             result = s3_client.head_object(Bucket=bucket, Key=key)
         except s3_client.exceptions.NoSuchKey, s3_client.exceptions.ClientError:
-            self.logger.info(
+            self.logger.debug(
                 f"Upload url 's3://{bucket}/{key}' doesn't already exist for '{file_id}'."
             )
             return False
@@ -499,7 +666,6 @@ class PConnection(Connection):
             ) from exception
 
         remote_md5_sum = result.get("Metadata", {}).get("md5sum", "")
-        local_md5_sum = utils.md5sum(file_path)
         # this is unneccessary: interrupted/failed uploads do not result in remote obects,
         # so the only way the metadata could be present is if the object uploads successfully
         # remote_crc64_nvme_checksum = result.get("ChecksumCRC64NVME", "")
@@ -515,9 +681,75 @@ class PConnection(Connection):
             )
         return already_uploaded
 
+    def guard_upload(
+        self,
+        upload_file: bool,
+        profile: IgvfSchema,
+        accession_id: AccessionId,
+        payload: dict[str, object],
+        original_record: dict[str, object] | None = None,
+    ) -> None:
+        """Perform the upload if we are supposed to"""
+        if upload_file:
+            if profile.name in self.profiles.FILE_PROFILE_ID:
+                file_path = Path(str(payload[self.profiles.SUBMITTED_FILE_PROP_NAME]))
+                md5sum = payload.get("md5sum", None)
+                set_md5sum = (
+                    md5sum if isinstance(md5sum, str) and len(md5sum) > 0 else None
+                )
+                if original_record is not None:
+                    upload_status = cast(
+                        str | None, original_record.get("upload_status", None)
+                    )
+                    if set_md5sum is None:
+                        set_md5sum = utils.md5sum(file_path)
+                    original_md5sum = cast(
+                        str | None, original_record.get("md5sum", None)
+                    )
+                    if upload_status in ("validated", "validation exempted"):
+                        if (
+                            original_md5sum is not None
+                            and original_md5sum != set_md5sum
+                        ):
+                            self.logger.warning(
+                                f"Skipping upload of {accession_id} with changed md5sum because "
+                                f"remote file is {upload_status}. Contact the DACC to invalidate "
+                                "if it needs to be replaced."
+                            )
+                        else:
+                            self.logger.info(
+                                f"Skipping upload of {accession_id} because remote file is {upload_status}."
+                            )
+                        return
+                    else:
+                        if (
+                            original_md5sum is not None
+                            and original_md5sum != set_md5sum
+                        ):
+                            self.logger.info(
+                                f"Uploading {accession_id} with changed md5sum."
+                            )
+                        else:
+                            self.logger.info(
+                                f"Uploading {accession_id} with unchanged md5sum, because "
+                                f"upload_status is {upload_status} and S3 backing cannot be "
+                                "directly checked."
+                            )
+                self.upload_file(
+                    file_id=accession_id, file_path=file_path, set_md5sum=set_md5sum
+                )
+            else:
+                self.logger.debug(
+                    f"No upload of {accession_id} because record is not a file."
+                )
+        else:
+            self.logger.debug(
+                f"Skipping upload of {accession_id} because upload is False"
+            )
+
     def upload_file(
         self,
-        file_id: str,
+        file_id: AccessionId,
         file_path: str | Path | None = None,
         set_md5sum: str | bool | None = None,
     ):
@@ -542,13 +774,7 @@ class PConnection(Connection):
               or a Google Storage object (i.e. gs://mybucket/test.txt).
               If not set, defaults to `None` in which case the local file path will be extracted from the
               record's `submitted_file_name` property.
-            set_md5sum: `bool`. True means to also calculate the md5sum and set the file record's `md5sum`
-              property on the Portal (this currently is only implemented for local files and S3; not yet GCP).
-              This will always take place whenever the property isn't yet set.
-              Furthermore, setting to True will also cause the `file_size` property to be set.
-              Normally these two properties would already be set as they are required in the *file* profile,
-              however, if the wrong file was originally uploaded, then they must be reset when
-              uploading a new file.
+            set_md5sum: Ignored unless it is a string. Then if non-empty it is the value of the file's local md5sum.
 
         Raises:
             igvf_utils.exceptions.FileUploadFailed: The return code of the AWS upload command was non-zero.
@@ -583,18 +809,21 @@ class PConnection(Connection):
             case _:
                 raise ValueError(f"Invalid type {type(file_path)} for file_path.")
 
-        if self._is_already_uploaded(
-            file_path=file_path,
-            file_id=file_id,
-            bucket=bucket,
-            key=key,
-            s3_client=s3_client,
-        ):
-            return
+        if isinstance(set_md5sum, str) and len(set_md5sum) > 0:
+            md5sum = set_md5sum
+        else:
+            md5sum = utils.md5sum(file_path)
+        # if self._is_already_uploaded(
+        #     file_path=file_path,
+        #     file_id=file_id,
+        #     bucket=bucket,
+        #     key=key,
+        #     s3_client=s3_client,
+        #     local_md5_sum=md5sum,
+        # ):
+        #     return
 
-        # cmd = f"aws s3 cp {file_path} {upload_url} --metadata 'md5sum={utils.md5sum(file_path)}'"
         self.logger.info(f"Uploading {file_path} to 's3://{bucket}/{key}'")
-        # self.logger.debug(f"Running command '{cmd}'.")
         if self.check_dry_run():
             return
 
@@ -602,13 +831,13 @@ class PConnection(Connection):
             Filename=f"{file_path}",
             Bucket=bucket,
             Key=key,
-            ExtraArgs={"Metadata": {"md5sum": utils.md5sum(file_path)}},
+            ExtraArgs={"Metadata": {"md5sum": md5sum}},
         )
         self.logger.info(
             f"Successfully uploaded '{file_path}' to 's3://{bucket}/{key}'."
         )
 
-    def get(self, rec_ids, database=False, ignore404=True, frame=None):
+    def get(self, rec_ids, database=None, ignore404=True, frame=None):
         """GET a record from the Portal.
 
         Looks up a record in the Portal and performs a GET request, returning the JSON serialization of
@@ -635,19 +864,20 @@ class PConnection(Connection):
             `requests.exceptions.HTTPError`: The status code is not ok, and the
                 cause isn't due to a 404 (not found) status code when ``ignore404=True``.
         """
-        if self.submission:
-            database = True
+        if database is None:
+            database = self.submission
         if isinstance(rec_ids, str):
             rec_ids = [rec_ids]
-        status_codes = {}  # key is return code, value is the record ID
+        status_codes = {}
         for r in rec_ids:
             r = r.strip("/")
-            url = iuu.url_join([self.igvf_mode.url, r, "?format=json"])
+            # url = iuu.url_join([self.igvf_mode.url, r, "?format=json"])
+            url = iuu.url_join([self.mode.url, r, "?format=json"])
             if database:
                 url += "&datastore=database"
             if frame:
-                url += "&frame={frame}".format(frame=frame)
-            self.logger.debug(f">>>>>>GET {r} From DACC with URL {url}")
+                url += f"&frame={frame}"
+            self.logger.debug(f"GET '{r}' From DACC with URL '{url}'")
             response = self.session.get(
                 url,
                 timeout=iu.TIMEOUT,
@@ -659,15 +889,132 @@ class PConnection(Connection):
             status_codes[response.status_code] = r
 
         if requests.codes.FORBIDDEN in status_codes:
-            raise Exception(
-                "Access to IGVF record {} is forbidden".format(
-                    status_codes[requests.codes.FORBIDDEN]
-                )
+            raise RuntimeError(
+                f"Access to IGVF record {status_codes[requests.codes.FORBIDDEN]} is forbidden"
             )
         elif requests.codes.NOT_FOUND in status_codes:
             self.logger.debug("NOT FOUND")
             if ignore404:
                 return None
+            try:
+                response.raise_for_status()
+            except requests.HTTPError as http_error:
+                raise RecordNotFound(f"{','.join(rec_ids)} not found") from http_error
+
         # At this point in the code, the response is not okay.
         # Raise the error for last response we got:
         response.raise_for_status()
+
+    def _get_record_from_lookups[T: AccessionId | Alias | PortalId](
+        self, keys: list[T]
+    ) -> IgvfRecord | tuple[()] | None:
+        all_negative_cache = True
+        for key in keys:
+            match self.record_lookups.get(key, None):
+                case dict(record):
+                    return record
+                case tuple():
+                    pass
+                case None:
+                    all_negative_cache = False
+        return tuple() if all_negative_cache else None
+
+    def cache_record[T: AccessionId | Alias | PortalId](
+        self, keys: list[T], record: IgvfRecord | tuple[()]
+    ) -> None:
+        for key in keys:
+            self.record_lookups[key] = record
+
+    def lookup_record[T: AccessionId | Alias | PortalId](
+        self,
+        key: T | list[T],
+        database: bool | None = None,
+        ignore404: bool = True,
+        frame: str | None = None,
+        cache_negative: bool = False,
+    ) -> IgvfRecord:
+        """Lookup record, using table of previous lookups if it's present, getting it directly and adding to table.
+
+        Args:
+            rec_ids: `str` or `list`. Must be a `list` if you want to supply more than one identifier.
+                For a few example identifiers, you can use a uuid, accession, ..., or even the value of
+                a record's `@id` property.
+            database: `bool`. If True, then search the database directly instead of the Elasticsearch.
+                 indices. Default True when in submission mode (`self.submission` is True), otherwise False
+            frame: `str`. A value for the frame query parameter, i.e. 'object', 'edit'.
+            ignore404: `bool`. Only matters when none of the passed in record IDs were found on the
+                Portal.  In this case, If set to `True`, then None will be returned.
+                If set to `False`, then an Exception will be raised.
+        """
+        keys = [key] if isinstance(key, str) else key
+        match self._get_record_from_lookups(keys):
+            case dict(record):
+                return record
+            case ():
+                raise RecordNotFound(f"Could not find record for '{','.join(keys)}'")
+            case None:
+                record = self.get(
+                    rec_ids=keys, database=database, ignore404=ignore404, frame=frame
+                )
+                if record is None:
+                    if cache_negative:
+                        self.cache_record(keys, ())
+                    raise RecordNotFound(
+                        f"Could not find record for '{','.join(keys)}'"
+                    )
+                self.cache_record(keys, record)
+                return record
+
+    def infer_principal_accessions(
+        self, intermediate_accessions: Iterable[AccessionId]
+    ) -> set[PortalId]:
+        """Check intermediate accessions to find the principal accessions they derive from."""
+        # check all the supplied intermediate accessions
+        to_check = set(intermediate_accessions)
+        principal_ids: set[PortalId] = set()
+        while len(to_check) > 0:
+            # pop off one of the intermediate accessions and get its record
+            intermediate_accession = to_check.pop()
+            intermediate_record = self.lookup_record(intermediate_accession)
+            if intermediate_record["status"] == "deleted":
+                continue
+            principal_ids_for_intermediate = intermediate_record.get("input_for", None)
+            if principal_ids_for_intermediate is None:
+                # it's not input for anything, so it must be a principal accession
+                principal_ids.add(intermediate_record["@id"])
+            else:
+                # it's input for these principal ids.
+                for principal_id in principal_ids_for_intermediate:
+                    # get the record for this principal ID
+                    principal_record = self.lookup_record(principal_id)
+                    if principal_record["status"] == "deleted":
+                        continue
+                    # get its accession and add it to the output set
+                    principal_ids.add(principal_record["@id"])
+                    # to decrease lookups, remove everything that was input to it from the IDs to check
+                    # (this is VERY effective for data sets with many intermediate accessions)
+                    intermediate_inputs = (
+                        rec["accession"]
+                        for rec in principal_record.get("input_file_sets", [])
+                    )
+                    to_check.difference_update(intermediate_inputs)
+
+        return principal_ids
+
+    def lookup_analysis_step_version(self, analysis_step: AnalysisStep) -> list[Alias]:
+        step_record = cast(dict[str, object], self.lookup_record(analysis_step.value))
+        for version_dict in cast(
+            list[dict[str, object]], step_record["analysis_step_versions"]
+        ):
+            for software_versions in cast(
+                list[dict[str, str]], version_dict["software_versions"]
+            ):
+                if (
+                    software_versions["name"]
+                    == f"igvf_pseudobulking_pipeline-v{VERSION}"
+                ):
+                    version_id = cast(Alias, version_dict["@id"])
+                    return self.lookup_record(version_id)["aliases"]
+        raise ValueError(
+            f"Unable to find version of analysis step {analysis_step} for 'igvf_pseudobulking_pipeline-v{VERSION}'"
+        )

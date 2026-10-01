@@ -14,7 +14,7 @@ from collections.abc import (
     Iterator,
 )
 from contextlib import contextmanager
-from io import TextIOWrapper
+from io import StringIO, TextIOWrapper
 from pathlib import Path
 from typing import Callable, Literal, TextIO
 
@@ -22,7 +22,7 @@ import requests
 from igvf_client import ApiClient, Configuration, IgvfApi
 
 from igvf_portal.enums import IgvfMode
-from igvf_portal.types import FromTypedDict, IgvfRecord
+from igvf_portal.types import AccessionId, Alias, FromTypedDict, IgvfRecord, PortalId
 
 
 def setup_logger(logger: logging.Logger, level: int = logging.INFO) -> None:
@@ -30,7 +30,7 @@ def setup_logger(logger: logging.Logger, level: int = logging.INFO) -> None:
     logger.setLevel(level)
 
 
-def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+def get_logger(name: str | None = None, level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger(name)
     setup_logger(logger, level)
     return logger
@@ -38,18 +38,15 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
 
 def get_logger_from_file(file_name: str, level: int = logging.INFO) -> logging.Logger:
     _, package_name, _, tool_name = file_name.split(".", 1)[0].rsplit("/", 3)
-    logger = logging.getLogger(
-        f"{package_name.replace('_', '-')} {tool_name.replace('_', '-')}"
+    return get_logger(
+        f"{package_name.replace('_', '-')} {tool_name.replace('_', '-')}", level=level
     )
-    setup_logger(logger, level)
-    return logger
 
 
 def fix_igvf_logging(
     level: int = logging.INFO, debug_logger: logging.Logger | None = None
 ):
-    root = logging.getLogger()
-    setup_logger(root, level=level)
+    root = get_logger(name=None, level=level)
     ch = logging.StreamHandler(stream=sys.stderr)
     f_formatter = logging.Formatter(
         "%(asctime)s %(name)s %(levelname)s: %(message)s",
@@ -65,6 +62,11 @@ def fix_igvf_logging(
     error_logger.propagate = False
     error_logger.handlers.clear()
     error_logger.addHandler(logging.NullHandler())
+    # At DEBUG the AWS SDK logs every signed S3 request with its headers, including the temporary
+    # session token, and a large upload makes tens of thousands of requests. Keep it at INFO, or at
+    # the requested level if that is quieter.
+    for aws_logger_name in ("botocore", "boto3", "s3transfer"):
+        logging.getLogger(aws_logger_name).setLevel(max(level, logging.INFO))
 
 
 def check_access_keys():
@@ -79,7 +81,7 @@ def open_igvf_api(igvf_mode: IgvfMode | str) -> IgvfApi:
     config = Configuration(
         access_key=os.environ["IGVF_API_KEY"],
         secret_access_key=os.environ["IGVF_SECRET_KEY"],
-        host=_igvf_mode.portal_api_url,
+        host=_igvf_mode.url,
     )
     client = ApiClient(config)
     return IgvfApi(client)
@@ -100,13 +102,19 @@ def lookup_ontology_by_cl_id(cl_id: str) -> list[dict[str, object]] | None:
 
 @contextmanager
 def maybe_gzipped(maybe_gzipped: Path, mode: Literal["w", "r"]) -> Generator[TextIO]:
-    """Get a text reader from a path that may or may not be gzipped."""
+    """Get a text reader from a path that may or may not be gzipped.
+
+    When writing, set mtime to 0 to ensure deterministic output.
+    """
     if maybe_gzipped.name.endswith(".gz"):
         if mode == "r":
             with gzip.open(f"{maybe_gzipped}", "rb") as f_gzip:
                 yield TextIOWrapper(f_gzip)
         else:
-            with gzip.open(f"{maybe_gzipped}", "wb") as f_gzip:
+            with (
+                maybe_gzipped.open("wb") as raw_in,
+                gzip.GzipFile(mode="wb", fileobj=raw_in, mtime=0) as f_gzip,
+            ):
                 yield TextIOWrapper(f_gzip)
     else:
         yield maybe_gzipped.open("rt" if mode == "r" else "wt")
@@ -166,7 +174,7 @@ def get_record_http_url(
     igvf_portal_region: str = "us-west-2",
 ) -> str:
     """Get a public HTTPS URL for downloading the specified file record."""
-    s3_uri = file_record["s3_uri"]
+    s3_uri = file_record.get("s3_uri", "")
     if s3_uri.startswith("s3://igvf-public/"):
         # it's a public S3 URL, construct equivalent https URL and return it
         _, _, bucket_name, object_key = s3_uri.split("/", 3)
@@ -176,7 +184,7 @@ def get_record_http_url(
     else:
         # it's a private S3 URL, but we can request a temporary download via the "href" field
         response = requests.head(
-            url=f"{igvf_mode.portal_api_url}{file_record['href']}",
+            url=f"{igvf_mode.url}{file_record['href']}",
             auth=(os.environ["IGVF_API_KEY"], os.environ["IGVF_SECRET_KEY"]),
             allow_redirects=True,
         )
@@ -196,15 +204,16 @@ def read_tsv(tsv: Path) -> list[list[str]]:
 
 
 def sanitize_to_ascii_underscore(text: str) -> str:
-    """Replace unicode characters with similar ascii, replace whitespace and commas with underscores."""
+    """Replace unicode with similar ascii, replace periods, commas, slashes, and whitespace with underscores."""
     # 1. Normalize Unicode to NFKD form to separate characters from accents
     # 2. Encode to ASCII and ignore characters that cannot be converted
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more commas or whitespace characters with a single underscore
+    # 4. Replace one or more periods, commas, forward or back slashes, or whitespace characters with a
+    #    single underscore
     # \s+ matches spaces, tabs, and newlines
-    return re.sub(r"[,\s]+", "_", text)
+    return re.sub(r"[.,/\\\s]+", "_", text)
 
 
 def retry[**P, R](
@@ -329,3 +338,23 @@ def md5sum(filepath: Path, chunk_size: int = 2**20) -> str:
         while chunk := f.read(chunk_size):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+@contextmanager
+def stream_bytes(
+    api: IgvfApi, key: PortalId | AccessionId | Alias
+) -> Generator[StringIO]:
+    """Stream bytes for the specified record from the IGVF Portal."""
+    try:
+        compressed_bytes = api.download(key)
+        decompressed_str = gzip.decompress(compressed_bytes).decode()
+        yield StringIO(decompressed_str)
+    except Exception:
+        raise RuntimeError(f"Unable to stream bytes from {key}")
+
+
+def file_not_in_portal(record: IgvfRecord) -> bool:
+    return (
+        record["status"] == "deleted"
+        or record.get("upload_status", "") == "file not found"
+    )

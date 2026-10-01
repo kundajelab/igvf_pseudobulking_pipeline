@@ -1,22 +1,22 @@
 from collections.abc import Iterable, Iterator
-from typing import Literal, cast
+from typing import Literal
 
 from igvf_portal import utils
+from igvf_portal.connection import PConnection
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import ContentType, IgvfMode
-from igvf_portal.igvf_lookup import IgvfLookup
-from igvf_portal.types import AccessionId
+from igvf_portal.types import AccessionId, PortalId
 
 
-def _get_reference_file_accessions(
-    igvf_lookup: IgvfLookup, check_accessions: Iterable[AccessionId]
-) -> Iterator[AccessionId]:
+def _get_reference_file_ids(
+    connection: PConnection, check_accessions: Iterable[AccessionId]
+) -> Iterator[PortalId]:
     check_types = frozenset({ContentType.FRAGMENTS.value, ContentType.MATRIX.value})
     all_check_accessions = set(check_accessions)
     remaining = all_check_accessions.copy()
     while len(remaining) > 0:
         check_accession = remaining.pop()
-        check_record = igvf_lookup.lookup_record(check_accession)
+        check_record = connection.lookup_record(check_accession)
         if "AnalysisSet" in check_record["@type"]:
             new_check = {
                 file_record["accession"]
@@ -27,15 +27,16 @@ def _get_reference_file_accessions(
             remaining.update(new_check)
         else:
             if check_record["content_type"] in check_types:
-                yield from cast(list[AccessionId], check_record["reference_files"])
+                for ref in check_record["reference_files"]:
+                    yield ref if isinstance(ref, str) else ref["@id"]
 
 
 def _get_reference_file_species(
-    igvf_lookup: IgvfLookup, reference_file_accessions: Iterable[AccessionId]
+    connection: PConnection, reference_file_ids: Iterable[PortalId]
 ) -> set[Literal["human", "mouse"]]:
     reference_file_summaries = {
-        igvf_lookup.lookup_record(reference_file_accession)["file_set"]["summary"]
-        for reference_file_accession in reference_file_accessions
+        connection.lookup_record(reference_file_accession)["file_set"]["summary"]
+        for reference_file_accession in reference_file_ids
     }
     return {
         "human" if "sapiens" in summary else "mouse"
@@ -61,15 +62,13 @@ def get_species(
     logger = utils.get_logger_from_file(__file__)
     logger.info(f"Version: {VERSION}")
 
-    igvf_lookup = IgvfLookup.new(igvf_mode=igvf_mode)
+    connection = PConnection.new(igvf_mode=igvf_mode)
     split_keys = {AccessionId(_split_key.strip()) for _split_key in key.split(",")}
-    reference_file_accessions = set(
-        _get_reference_file_accessions(
-            igvf_lookup=igvf_lookup, check_accessions=split_keys
-        )
+    reference_file_ids = set(
+        _get_reference_file_ids(connection=connection, check_accessions=split_keys)
     )
     species = _get_reference_file_species(
-        igvf_lookup=igvf_lookup, reference_file_accessions=reference_file_accessions
+        connection=connection, reference_file_ids=reference_file_ids
     )
     match len(species):
         case 0:

@@ -1,9 +1,9 @@
 from pathlib import Path
 
 from igvf_portal import utils
+from igvf_portal.connection import PConnection
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import IgvfMode
-from igvf_portal.igvf_lookup import IgvfLookup
 from igvf_portal.types import Alias
 
 
@@ -24,8 +24,8 @@ def download_file(
     logger = utils.get_logger_from_file(__file__)
     logger.info(f"Version: {VERSION}")
 
-    igvf_lookup = IgvfLookup.new(igvf_mode=igvf_mode)
-    record = igvf_lookup.lookup_record(Alias(key))
+    connection = PConnection.new(igvf_mode=igvf_mode)
+    record = connection.lookup_record(Alias(key))
     utils.download_record(
         record=record,
         igvf_mode=igvf_mode,

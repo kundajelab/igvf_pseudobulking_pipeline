@@ -7,6 +7,8 @@ from threading import Lock as ThreadLock
 
 @dataclasses.dataclass(slots=True)
 class ParallelLogger:
+    """Logger that can work in parallel environments without threads/processes clobbering each other."""
+
     logger: logging.Logger
     lock: ThreadLock | ProcessLock | nullcontext
 
@@ -19,6 +21,12 @@ class ParallelLogger:
         return ParallelLogger(
             logger=logger, lock=nullcontext() if lock is None else lock
         )
+
+    def setLevel(self, level: int | str) -> None:
+        self.logger.setLevel(level)
+
+    def getEffectiveLevel(self) -> int:
+        return self.logger.getEffectiveLevel()
 
     def debug(self, message: str) -> None:
         with self.lock:

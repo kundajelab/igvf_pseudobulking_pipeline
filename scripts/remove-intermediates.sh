@@ -52,9 +52,11 @@ function clear_workspace {
     local -r project_dir="$1"
     if [[ "$(basename "$project_dir")" == "apptainer_cache" ]]; then
         return  # don't clear the common apptainer_cache
-    elif [[ ! -d "$project_dir/output" ]]; then
+    fi
+    1>&2 echo "Clearing $project_dir"
+    if [[ ! -d "$project_dir/output" ]]; then
         # this is not a project folder, remove the whole thing
-        rm -r "$project_dir"
+        rm -rf "$project_dir"
         return
     fi
 
@@ -63,7 +65,7 @@ function clear_workspace {
         fix_link "$link_path"
     done
 
-    rm -r "$project_dir/work"
+    rm -rf "$project_dir/work"
 }
 
 if [[ "$1" == "all" ]]; then

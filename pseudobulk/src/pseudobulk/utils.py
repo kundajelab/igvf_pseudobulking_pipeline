@@ -12,7 +12,6 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from logging import Logger
 from pathlib import Path
-from threading import Lock
 from types import MappingProxyType
 from typing import (
     Callable,
@@ -300,15 +299,16 @@ def load_metadata(
 
 
 def sanitize_to_ascii_underscore(text: str) -> str:
-    """Replace unicode characters with similar ascii, replace whitespace and commas with underscores."""
+    """Replace unicode with similar ascii, replace periods, commas, slashes, and whitespace with underscores."""
     # 1. Normalize Unicode to NFKD form to separate characters from accents
     # 2. Encode to ASCII and ignore characters that cannot be converted
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more commas or whitespace characters with a single underscore
+    # 4. Replace one or more periods, commas, forward or back slashes, or whitespace characters with a
+    #    single underscore
     # \s+ matches spaces, tabs, and newlines
-    return re.sub(r"[,\s]+", "_", text)
+    return re.sub(r"[.,/\\\s]+", "_", text)
 
 
 def _get_map_to_sanitized(cell_name: pd.Series) -> dict[str, str]:
@@ -588,6 +588,7 @@ def merge_rna_and_atac_qc(
     atac_qc: pd.DataFrame,
     logger: Logger,
     log_lock: LogLock | None = None,
+    raise_on_empty: bool = True,
 ) -> pd.DataFrame:
     """Combined RNA QC and ATAC QC into one DataFrame object by merging on shared columns.
 
@@ -598,6 +599,8 @@ def merge_rna_and_atac_qc(
         rna_qc: DataFrame
         logger: Logger to output progress
         log_lock: An optional lock to use when logging. If None, no lock is used
+        raise_on_empty: If True, raise exception if there is neither RNA-seq or ATAC-seq. If False,
+            warn and return an empty object.
     Returns:
         Combined QC DataFrame with columns from both RNA and ATAC QC.
     """
@@ -608,10 +611,17 @@ def merge_rna_and_atac_qc(
         raise ValueError("ATAC QC column labels must be supplied, even if ATAC QC is empty.")
     match len(rna_qc), len(atac_qc):
         case 0, 0:
-            # RNA and ATAC QC are empty (but contain the correct columns), return empty DataFrame
-            combined_qc = pd.DataFrame([], columns=rna_qc.columns + atac_qc.columns)
-            with _log_lock:
-                logger.info(f"No RNA QC or ATAC QC for {identifier}")
+            # RNA and ATAC QC are empty (but contain the correct columns)
+            if raise_on_empty:
+                raise RuntimeError(f"No RNA QC or ATAC QC for {identifier}")
+            else:
+                # warn and return empty DataFrame
+                combined_qc = pd.DataFrame(
+                    [],
+                    columns=rna_qc.columns.append(atac_qc.columns).drop_duplicates(keep="first"),
+                )
+                with _log_lock:
+                    logger.warning(f"No RNA QC or ATAC QC for {identifier}")
         case 0, _:
             # RNA QC is empty (but will contain the correct columns)
             combined_qc = atac_qc.copy()

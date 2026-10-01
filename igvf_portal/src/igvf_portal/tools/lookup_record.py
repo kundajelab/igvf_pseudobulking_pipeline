@@ -1,8 +1,8 @@
 import yaml
 
 from igvf_portal import utils
+from igvf_portal.connection import IgvfMode, PConnection
 from igvf_portal.constants import VERSION
-from igvf_portal.igvf_lookup import IgvfLookup, IgvfMode
 from igvf_portal.types import AccessionId
 
 
@@ -17,6 +17,6 @@ def lookup_record(key: str, *, igvf_mode: IgvfMode = IgvfMode.prod) -> None:
     logger = utils.get_logger_from_file(__file__)
     logger.info(f"Version: {VERSION}")
 
-    igvf_lookup = IgvfLookup.new(igvf_mode=igvf_mode)
-    record = igvf_lookup.lookup_record(AccessionId(key))
+    connection = PConnection.new(igvf_mode=igvf_mode)
+    record = connection.lookup_record(AccessionId(key))
     print(yaml.dump(record, sort_keys=False))

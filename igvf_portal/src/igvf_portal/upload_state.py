@@ -12,6 +12,7 @@ from typing import Final, cast
 
 from igvf_portal.enums import (
     AnalysisStep,
+    LogLevel,
     OutputCategory,
 )
 from igvf_portal.gen_upload_config import GenUploadConfig
@@ -146,7 +147,7 @@ class FileUploadRows:
     signal_rows: list[UploadRow] = dataclasses.field(default_factory=list)
 
 
-@dataclasses.dataclass(kw_only=True, slots=True)
+@dataclasses.dataclass(kw_only=True, slots=False)
 class UploadState:
     basedir: Path
     config: GenUploadConfig
@@ -163,6 +164,7 @@ class UploadState:
     required_cell_ids: set[Alias] = dataclasses.field(default_factory=set)
     required_sample_ids: set[Alias] = dataclasses.field(default_factory=set)
     required_format_specs: set[Alias] = dataclasses.field(default_factory=set)
+    log_level: str = LogLevel.info.name
 
     def __post_init__(self):
         # Check for missing or extra pseudobulks
@@ -175,9 +177,10 @@ class UploadState:
                 'script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )',
                 'pushd "$script_dir" &> /dev/null',
                 f'dry_run_arg="{"--dry-run" if self.config.dry_run else ""}"',
-                f'igvf_mode="{self.config.igvf_lookup.igvf_mode}"',
+                f'igvf_mode="{self.config.connection.mode.value}"',
             ]
         )
+        self.log_level = LogLevel(self.config.logger.getEffectiveLevel()).name
 
     @property
     def pseudobulk_dir(self) -> Path:
@@ -300,7 +303,9 @@ class UploadState:
             f"1>&2 echo Register {upload_type}{step_description}"
         )
         self.submission_rows.append(
-            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode" --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode"'
+            f' --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f' --log-level "{self.log_level}"'
         )
 
     def write_upload_state(self) -> None:

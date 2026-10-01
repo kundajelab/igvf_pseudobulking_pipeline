@@ -6,14 +6,15 @@ __pycache__/
 
 .vscode/
 .zed/
-.claude/
+# Claude Code: share project permission policy, keep personal overrides local.
+# Must be `.claude/*` not `.claude/`; git will not descend into an excluded directory,
+# so a negation under a trailing-slash exclusion never matches.
+.claude/*
+!.claude/settings.json
 workspace/
 .ruff_cache/
 .DS_Store
 .pixi/
-# pixi environments
-.pixi/*
-!.pixi/config.toml
 build/
 *.egg-info/
 *.so
