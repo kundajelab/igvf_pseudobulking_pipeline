@@ -54,6 +54,10 @@ while [[ "$#" -ge 1 ]]; do
             queue="$2"
             shift 2
             ;;
+        "-P" | "--partition")
+            partition="$2"
+            shift 2
+            ;;
         "-a" | "--principal-analysis")
             principal_analysis="$2"
             shift 2
