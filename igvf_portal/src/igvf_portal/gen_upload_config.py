@@ -6,18 +6,18 @@ from collections.abc import (
     Mapping,
 )
 from functools import cached_property
-from logging import Logger
 from pathlib import Path
 from types import MappingProxyType
-from typing import cast
+from typing import Final, cast
 
 from igvf_portal import VERSION, utils
+from igvf_portal.connection import PConnection
 from igvf_portal.enums import (
     AnalysisStep,
     ContentType,
     OutputCategory,
 )
-from igvf_portal.igvf_lookup import IgvfLookup
+from igvf_portal.parallel_logger import ParallelLogger
 from igvf_portal.types import (
     AccessionId,
     Alias,
@@ -28,6 +28,9 @@ from igvf_portal.types import (
     PseudobulkId,
 )
 
+DEFAULT_LAB: Final[PortalId] = PortalId("/labs/anshul-kundaje/")
+DEFAULT_AWARD: Final[PortalId] = PortalId("/awards/HG012069/")
+
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class GenUploadConfig:
@@ -35,17 +38,17 @@ class GenUploadConfig:
 
     basedir: Path
     input_file_sets: str | None
-    igvf_lookup: IgvfLookup
+    connection: PConnection
     compute_md5: bool = True
     dry_run: bool = True
-    lab: PortalId = PortalId("/labs/anshul-kundaje/")
-    award: PortalId = PortalId("/awards/HG012069/")
+    lab: PortalId = DEFAULT_LAB
+    award: PortalId = DEFAULT_AWARD
     file_set_type: str = "pseudobulk analysis"
     alias_prefix: str = "anshul-kundaje"
     metadata_path: Path | None = None
     annotations_path: Path | None = None
-    logger: Logger
-    _content_accessions: dict[tuple[AccessionId, ContentType], set[AccessionId]] = (
+    logger: ParallelLogger
+    _content_accessions: dict[tuple[AccessionId | PortalId, ContentType], set[AccessionId]] = (
         dataclasses.field(default_factory=dict)
     )
     step_1_aliases: defaultdict[Alias, list[Alias]] = dataclasses.field(
@@ -58,27 +61,37 @@ class GenUploadConfig:
         default_factory=lambda: defaultdict(list)
     )
 
-    def lookup_record(self, key: Alias | AccessionId | PortalId) -> IgvfRecord:
-        """Convenience method to lookup record within GenUploadConfig."""
-        return self.igvf_lookup.lookup_record(key)
+    def lookup_record[T: AccessionId | Alias | PortalId](
+        self,
+        key: T | Iterable[T],
+        database: bool | None = None,
+        ignore404: bool = True,
+        frame: str | None = None,
+        cache_negative: bool = False,
+    ) -> IgvfRecord:
+        """Convenience method to lookup record within GenUploadConfig.
+
+        Args are passed through to PConnection.lookup_record.
+        """
+        return self.connection.lookup_record(
+            key,
+            database=database,
+            ignore404=ignore404,
+            frame=frame,
+            cache_negative=cache_negative,
+        )
 
     def _lookup_analysis_step_version(self, analysis_step: AnalysisStep) -> PortalId:
         """Get aliases for the requested AnalysisStepVersion."""
         step_record = cast(dict[str, object], self.lookup_record(analysis_step.value))
-        for version_dict in cast(
-            list[dict[str, object]], step_record["analysis_step_versions"]
-        ):
-            for software_versions in cast(
-                list[dict[str, str]], version_dict["software_versions"]
-            ):
-                if (
-                    software_versions["name"]
-                    == f"igvf_pseudobulking_pipeline-v{VERSION}"
-                ):
+        for version_dict in cast(list[dict[str, object]], step_record["analysis_step_versions"]):
+            for software_versions in cast(list[dict[str, str]], version_dict["software_versions"]):
+                if software_versions["name"] == f"igvf_pseudobulking_pipeline-v{VERSION}":
                     version_id = cast(Alias, version_dict["@id"])
-                    return self.lookup_record(version_id)["@id"]
+                    return self.lookup_record(version_id, frame="object")["@id"]
         raise ValueError(
-            f"Unable to find version of analysis step {analysis_step} for 'igvf_pseudobulking_pipeline-v{VERSION}'"
+            f"Unable to find version of analysis step {analysis_step} for "
+            f"'igvf_pseudobulking_pipeline-v{VERSION}'"
         )
 
     @cached_property
@@ -98,8 +111,9 @@ class GenUploadConfig:
     @cached_property
     def annotations(self) -> Mapping[PseudobulkId, AnnotationRow]:
         """Load pseudobulk annotations TSV and return map from pseudobulk ID to annotations row."""
-        # get the required fields
-        fields = AnnotationRow.__annotations__
+        # get the fields, keeping only those in AnnotationRow. All of them are str at runtime
+        # (the annotations are NewType or NotRequired[NewType], which cannot be called to cast)
+        fields = frozenset(AnnotationRow.__annotations__)
         annotations_path = (
             self.basedir / "cell_name_to_annotation_mapping.tsv"
             if self.annotations_path is None
@@ -109,13 +123,13 @@ class GenUploadConfig:
             raise ValueError(f"Annotations path '{annotations_path}' does not exist.")
 
         def _cast_to_annotations() -> Iterator[AnnotationRow]:
-            """Private function to yield the rows of the annotations files as AnnotationRow objects."""
+            """Yield the rows of the annotations files as AnnotationRow objects."""
             for row in utils.iter_csv_rows(
                 annotations_path, required_columns=AnnotationRow.__required_keys__
             ):
                 yield cast(
                     AnnotationRow,
-                    {name: fields[name](value) for name, value in row.items()},
+                    {name: value for name, value in row.items() if name in fields},
                 )
 
         # return lookup dict with keys = pseudobulk ID and values being AnnotationsRows
@@ -129,7 +143,9 @@ class GenUploadConfig:
         return annotations
 
     def _lookup_content_accessions(
-        self, analysis_set_accession: AccessionId, content_type: ContentType
+        self,
+        analysis_set_accession: AccessionId | PortalId,
+        content_type: ContentType,
     ) -> set[AccessionId]:
         """Query portal for all input files to specified analysis set of specified ContentType.
 
@@ -141,20 +157,18 @@ class GenUploadConfig:
         file_accessions = {
             input_file["accession"]
             for input_file in self.lookup_record(analysis_set_accession)["files"]
-            if input_file["content_type"] == content_type.value
+            if content_type.is_wanted(input_file)
         }
         if len(file_accessions) == 0:
             # didn't find any references for this analysis set, find references for analysis sets
             # listed in "input_for"
-            input_for = self.lookup_record(analysis_set_accession).get(
-                "input_for", None
-            )
+            input_for = self.lookup_record(analysis_set_accession).get("input_for", None)
             if input_for is not None:
                 file_accessions = {
                     ref
-                    for input_for_accession in self.lookup_record(
-                        analysis_set_accession
-                    )["input_for"]
+                    for input_for_accession in self.lookup_record(analysis_set_accession)[
+                        "input_for"
+                    ]
                     for ref in self._lookup_content_accessions(
                         input_for_accession, content_type=content_type
                     )
@@ -186,12 +200,11 @@ class GenUploadConfig:
         else:
             return {accession_id}
 
-    def _get_all_content_type_accessions(
-        self, content_type: ContentType
-    ) -> set[AccessionId]:
-        """Preferring info in AnnotationAccessions, get all input files of the requested ContentType."""
+    def _get_all_content_type_accessions(self, content_type: ContentType) -> set[AccessionId]:
+        """Get all input files of the requested ContentType, preferring AnnotationAccessions."""
         if self.input_accessions is None:
-            # lookup via file_sets, but this should only happen if metadata is not available, which shouldn't be the case in pipeline
+            # lookup via file_sets, but this should only happen if metadata is not available, which
+            # shouldn't be the case in pipeline
             return {
                 fragment_accession
                 for file_set in self.file_sets
@@ -200,7 +213,8 @@ class GenUploadConfig:
                 )
             }
         else:
-            # use metadata to get the actual accession info. We should get the right accessions this way.
+            # use metadata to get the actual accession info. We should get the right accessions this
+            # way.
             return {
                 accession
                 for input_accession in self.input_accessions
@@ -220,8 +234,11 @@ class GenUploadConfig:
         return self._get_all_content_type_accessions(content_type=ContentType.MATRIX)
 
     def _lookup_aligned_refs(self, accession: AccessionId) -> list[PortalId]:
-        """Given the accession ID of an aligned file (e.g. matrix or fragments file) get reference files."""
-        return self.lookup_record(accession)["reference_files"]
+        """Get reference files for an aligned file (e.g. matrix or fragments file) accession ID."""
+        return [
+            rec if isinstance(rec, str) else rec["@id"]
+            for rec in self.lookup_record(accession, frame="object")["reference_files"]
+        ]
 
     @cached_property
     def reference_ids(self) -> set[PortalId]:
@@ -239,13 +256,13 @@ class GenUploadConfig:
         return ",".join(self.reference_ids)
 
     @cached_property
-    def assembly(self) -> str:
+    def assemblies(self) -> tuple[str, ...]:
         """Lookup assembly used in principal analyses."""
         assemblies = {
-            self.lookup_record(Alias(reference_file))["assembly"]
+            self.lookup_record(reference_file, frame="object")["assembly"]
             for reference_file in self.reference_ids
         }
-        return ",".join(sorted(assemblies))
+        return tuple(sorted(assemblies))
 
     @cached_property
     def controlled_access(self) -> bool:
@@ -257,7 +274,7 @@ class GenUploadConfig:
 
     @cached_property
     def annotations_file_accession(self) -> AccessionId | None:
-        """Get the accession ID for the annotations file, or return None if it cannot be determined."""
+        """Get the accession ID for the annotations file, or None if it cannot be determined."""
         annotations_files: list[IgvfRecord] = [
             file_record
             for file_set in self.file_sets
@@ -267,33 +284,30 @@ class GenUploadConfig:
         if self.metadata_path is not None:
             annotations_md5sum = utils.md5sum(self.metadata_path)
             annotations_files = [
-                record
-                for record in annotations_files
-                if record["md5sum"] == annotations_md5sum
+                record for record in annotations_files if record["md5sum"] == annotations_md5sum
             ]
-        record_accessions: set[AccessionId] = {
-            record["accession"] for record in annotations_files
-        }
+        record_accessions: set[AccessionId] = {record["accession"] for record in annotations_files}
         if len(record_accessions) == 1:
-            annotations_record = self.lookup_record(record_accessions.pop())
+            annotations_record = self.lookup_record(record_accessions.pop(), frame="object")
             return annotations_record["accession"]
         else:
             self.logger.warning(
-                f"Unable to determine annotations file, got {len(record_accessions)} possible accession IDs."
+                f"Unable to determine annotations file, got {len(record_accessions)} possible "
+                "accession IDs."
             )
             return None
 
     @cached_property
     def annotations_file_id(self) -> PortalId | None:
-        """Get a single alias for the annotations file, or return None if it cannot be determined."""
+        """Get a single alias for the annotations file, or None if it cannot be determined."""
         annotations_accession = self.annotations_file_accession
         if annotations_accession is not None:
-            annotations_record = self.lookup_record(annotations_accession)
+            annotations_record = self.lookup_record(annotations_accession, frame="object")
             return annotations_record["@id"]
 
     @cached_property
     def analysis_step_versions(self) -> dict[AnalysisStep, PortalId]:
-        """Get map from AnalysisStep to list of aliases for AnalysisStepVersion"""
+        """Get map from AnalysisStep to list of aliases for AnalysisStepVersion."""
         return {
             analysis_step: self._lookup_analysis_step_version(analysis_step)
             for analysis_step in AnalysisStep
@@ -304,7 +318,7 @@ class GenUploadConfig:
         """Get list of Aliases to fragments files used by the pipeline."""
         return sorted(
             {
-                self.lookup_record(fragments_accession)["@id"]
+                self.lookup_record(fragments_accession, frame="object")["@id"]
                 for fragments_accession in self.fragment_accessions
             }
         )
@@ -314,7 +328,7 @@ class GenUploadConfig:
         """Get list of Aliases to matrix files used by the pipeline."""
         return sorted(
             {
-                self.lookup_record(matrix_accession)["@id"]
+                self.lookup_record(matrix_accession, frame="object")["@id"]
                 for matrix_accession in self.matrix_accessions
             }
         )
@@ -322,10 +336,11 @@ class GenUploadConfig:
     def _collect_portal_ids_by_file_set(
         self, portal_ids: Iterable[PortalId]
     ) -> MappingProxyType[PortalId, frozenset[PortalId]]:
-        """Given a set of input PortalId, collect into mapping from input file_set to sorted input IDs."""
+        """Collect input PortalIds into mapping from input file_set to sorted input IDs."""
         fileset_ids: defaultdict[PortalId, set[PortalId]] = defaultdict(set)
         for portal_id in portal_ids:
-            file_set_id = self.lookup_record(portal_id)["file_set"]["@id"]
+            # in the object frame a link is the linked record's @id
+            file_set_id = cast(PortalId, self.lookup_record(portal_id, frame="object")["file_set"])
             fileset_ids[file_set_id].add(portal_id)
         return MappingProxyType({k: frozenset(v) for k, v in fileset_ids.items()})
 
@@ -346,7 +361,17 @@ class GenUploadConfig:
         file_set_alias: Alias,
         upload_path: Path,
     ) -> list[PortalId] | list[Alias]:
-        """Get list of aliases to files that this data is derived from."""
+        """Get list of aliases to files that this data is derived from.
+
+        Args:
+            analysis_step: Analysis step that produced the data.
+            output_category: Which kind of file is being uploaded.
+            file_set_alias: Alias of the file set that this data is part of.
+            upload_path: Path to the file being uploaded.
+
+        Returns:
+            Sorted Portal IDs or aliases of the files this data is derived from.
+        """
         annotations_id_list: frozenset[PortalId] = frozenset(
             {} if self.annotations_file_id is None else {self.annotations_file_id}
         )
@@ -357,9 +382,7 @@ class GenUploadConfig:
                 input_ids = {
                     portal_id
                     for file_set in self.get_input_file_sets(annotations_row)
-                    for portal_id in self.file_set_fragments_portal_ids.get(
-                        file_set, []
-                    )
+                    for portal_id in self.file_set_fragments_portal_ids.get(file_set, [])
                 }
                 derived_from_ids = sorted(input_ids | annotations_id_list)
             case AnalysisStep.PSEUDOBULK_RNA_SEQ, OutputCategory.PSEUDOBULK:
@@ -371,10 +394,12 @@ class GenUploadConfig:
                 }
                 derived_from_ids = sorted(input_ids | annotations_id_list)
             case AnalysisStep.PEAK_CALLING, OutputCategory.PSEUDOBULK:
-                # peak calling depends on all the ATAC_SEQ pseudobulks in the same pseudobulk file set
+                # peak calling depends on all the ATAC_SEQ pseudobulks in the same pseudobulk file
+                # set
                 derived_from_ids = sorted(set(self.step_1_aliases[file_set_alias]))
             case AnalysisStep.QC, OutputCategory.PSEUDOBULK:
-                # pseudobulk QC depends on all the primary pseudobulk files in the same pseudobulk file set
+                # pseudobulk QC depends on all the primary pseudobulk files in the same pseudobulk
+                # file set
                 derived_from_ids = sorted(
                     {
                         alias
@@ -401,12 +426,11 @@ class GenUploadConfig:
                 )
             case _:
                 raise ValueError(
-                    f"Invalid combination of AnalysisStep {analysis_step} and OutputCategory {output_category}."
+                    f"Invalid combination of AnalysisStep {analysis_step} and OutputCategory "
+                    f"{output_category}."
                 )
         if derived_from_ids is None or len(derived_from_ids) == 0:
-            raise ValueError(
-                f"Unable to find derived_from for analysis_step {analysis_step}"
-            )
+            raise ValueError(f"Unable to find derived_from for analysis_step {analysis_step}")
         return derived_from_ids
 
     @cached_property
@@ -421,17 +445,12 @@ class GenUploadConfig:
             )
 
     def get_input_file_sets(self, annotations_row: AnnotationRow) -> Iterator[PortalId]:
-        """Return accession IDs of input file_sets for a given pseudobulk"""
+        """Return accession IDs of input file_sets for a given pseudobulk."""
         if self.input_accessions is None:
             for file_set in self.file_sets:
                 yield file_set
-                for input_file_set in self.lookup_record(file_set).get(
-                    "input_file_sets", []
-                ):
-                    if (
-                        input_file_set.get("file_set_type", "")
-                        == "intermediate analysis"
-                    ):
+                for input_file_set in self.lookup_record(file_set).get("input_file_sets", []):
+                    if input_file_set.get("file_set_type", "") == "intermediate analysis":
                         yield input_file_set["@id"]
         else:
             for input_accession in self.input_accessions:
@@ -439,23 +458,33 @@ class GenUploadConfig:
                     input_accession.cell_name == annotations_row["cell_name"]
                     and input_accession.subsample == annotations_row["subsample"]
                 ):
-                    yield self.lookup_record(input_accession.analysis_set_accession)[
-                        "@id"
-                    ]
+                    yield self.lookup_record(input_accession.analysis_set_accession)["@id"]
+                    # in the object frame a link is the linked record's @id
                     if input_accession.matrix_file_accession is not None:
-                        yield self.lookup_record(input_accession.matrix_file_accession)[
-                            "file_set"
-                        ]["@id"]
+                        yield cast(
+                            PortalId,
+                            self.lookup_record(
+                                input_accession.matrix_file_accession, frame="object"
+                            )["file_set"],
+                        )
                     if input_accession.fragments_file_accession is not None:
-                        yield self.lookup_record(
-                            input_accession.fragments_file_accession
-                        )["file_set"]["@id"]
+                        yield cast(
+                            PortalId,
+                            self.lookup_record(
+                                input_accession.fragments_file_accession, frame="object"
+                            )["file_set"],
+                        )
         if self.annotations_file_accession is not None:
-            yield self.lookup_record(self.annotations_file_accession)["file_set"]["@id"]
+            yield cast(
+                PortalId,
+                self.lookup_record(self.annotations_file_accession, frame="object")["file_set"],
+            )
 
     def _infer_input_file_sets(self) -> set[PortalId]:
-        """Use the IGVF portal to look up parent file sets if they exist, otherwise use provided intermediate"""
+        """Use the IGVF portal to look up parent file sets.
 
+        If they do not exist, use the provided intermediate file sets.
+        """
         intermediate_path = self.basedir / "analysis_accession_qc_reports"
         intermediate_accessions = (
             {
@@ -464,33 +493,27 @@ class GenUploadConfig:
             }
             if self.input_accessions is None
             else {
-                input_accession.analysis_set_accession
-                for input_accession in self.input_accessions
+                input_accession.analysis_set_accession for input_accession in self.input_accessions
             }
         )
-        return self.igvf_lookup.infer_principal_accessions(intermediate_accessions)
+        return self.connection.infer_principal_accessions(intermediate_accessions)
 
     def get_annotations_row(self, pseudobulk_path: Path) -> AnnotationRow:
-        """Extract cell_name and subsample from the pseudobulk folder and cell-name-to-annotations TSV."""
+        """Get the annotations row for the pseudobulk folder from cell-name-to-annotations TSV."""
         pseudobulk_id = PseudobulkId(
-            (
-                pseudobulk_path if pseudobulk_path.is_dir() else pseudobulk_path.parent
-            ).name
+            (pseudobulk_path if pseudobulk_path.is_dir() else pseudobulk_path.parent).name
         )
         return self.annotations[pseudobulk_id]
 
     def report_pseudobulk_match(self, pseudobulk_dir: Path) -> None:
         """Report bidirectional match between pseudobulk folders and annotations."""
         folder_ids: set[PseudobulkId] = {
-            PseudobulkId(_folder.name)
-            for _folder in utils.iter_pseudobulk_dirs(pseudobulk_dir)
+            PseudobulkId(_folder.name) for _folder in utils.iter_pseudobulk_dirs(pseudobulk_dir)
         }
         annotation_ids: set[PseudobulkId] = set(self.annotations.keys())
 
         only_in_folders = folder_ids - annotation_ids  # folders with no lookup entry
-        only_in_annotations = (
-            annotation_ids - folder_ids
-        )  # lookup rows never used by a folder
+        only_in_annotations = annotation_ids - folder_ids  # lookup rows never used by a folder
 
         self.logger.info("── Cell type match report ──")
         self.logger.info(
@@ -510,8 +533,7 @@ class GenUploadConfig:
             )
         if len(only_in_folders) == len(only_in_annotations) == 0:
             self.logger.info(
-                f"  ✓ Perfect match: all {len(folder_ids)} cell types matched "
-                f"in both directions."
+                f"  ✓ Perfect match: all {len(folder_ids)} cell types matched in both directions."
             )
 
     def md5sum(self, filepath: Path, chunk_size: int = 2**20) -> str:

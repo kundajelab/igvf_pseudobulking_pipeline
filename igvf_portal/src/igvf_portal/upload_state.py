@@ -12,6 +12,7 @@ from typing import Final, cast
 
 from igvf_portal.enums import (
     AnalysisStep,
+    LogLevel,
     OutputCategory,
 )
 from igvf_portal.gen_upload_config import GenUploadConfig
@@ -141,30 +142,34 @@ PRINCIPAL_FILE_DEFINITIONS: Final[tuple[IgvfUploadBase, ...]] = (
 
 @dataclasses.dataclass(kw_only=True, slots=True)
 class FileUploadRows:
+    """Upload rows for one analysis step, grouped by file profile."""
+
     tabular_rows: list[UploadRow] = dataclasses.field(default_factory=list)
     matrix_rows: list[UploadRow] = dataclasses.field(default_factory=list)
     signal_rows: list[UploadRow] = dataclasses.field(default_factory=list)
 
 
-@dataclasses.dataclass(kw_only=True, slots=True)
+@dataclasses.dataclass(kw_only=True, slots=False)
 class UploadState:
+    """Accumulates upload rows and the submission script for a pipeline output folder."""
+
     basedir: Path
     config: GenUploadConfig
     document_rows: list[UploadRow] = dataclasses.field(default_factory=list)
     pseudobulk_folders_docs: defaultdict[Path, list[Alias]] = dataclasses.field(
         default_factory=lambda: defaultdict(list)
     )
-    analysis_step_file_upload_rows: dict[AnalysisStep, FileUploadRows] = (
-        dataclasses.field(
-            default_factory=lambda: {step: FileUploadRows() for step in AnalysisStep}
-        )
+    analysis_step_file_upload_rows: dict[AnalysisStep, FileUploadRows] = dataclasses.field(
+        default_factory=lambda: {step: FileUploadRows() for step in AnalysisStep}
     )
     submission_rows: list[str] = dataclasses.field(default_factory=list)
     required_cell_ids: set[Alias] = dataclasses.field(default_factory=set)
     required_sample_ids: set[Alias] = dataclasses.field(default_factory=set)
     required_format_specs: set[Alias] = dataclasses.field(default_factory=set)
+    log_level: str = LogLevel.info.name
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """Check pseudobulks match the config and start the submission script."""
         # Check for missing or extra pseudobulks
         self.config.report_pseudobulk_match(self.pseudobulk_dir)
         # Set initial submission_rows
@@ -175,20 +180,24 @@ class UploadState:
                 'script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )',
                 'pushd "$script_dir" &> /dev/null',
                 f'dry_run_arg="{"--dry-run" if self.config.dry_run else ""}"',
-                f'igvf_mode="{self.config.igvf_lookup.igvf_mode}"',
+                f'igvf_mode="{self.config.connection.mode.value}"',
             ]
         )
+        self.log_level = LogLevel(self.config.logger.getEffectiveLevel()).name
 
     @property
     def pseudobulk_dir(self) -> Path:
+        """Folder containing one sub-folder per pseudobulk."""
         return self.basedir / "pseudobulks"
 
     @property
     def intermediate_dir(self) -> Path:
+        """Folder containing intermediate analysis QC reports."""
         return self.basedir / "analysis_accession_qc_reports"
 
     @property
     def upload_tsvs_dir(self) -> Path:
+        """Folder where upload TSVs are written."""
         return self.basedir / "upload_tsvs"
 
     def _update_rows(
@@ -219,7 +228,10 @@ class UploadState:
                         self.document_rows.append(row)
 
     def _get_pseudobulk_uploads(self, analysis_step: AnalysisStep) -> None:
-        """For each pseudobulk folder, get all the uploads in that folder and create a pseudobulk upload."""
+        """For each pseudobulk folder, get all the uploads in that folder.
+
+        Also register each folder for a pseudobulk upload, via pseudobulk_folders_docs.
+        """
         for folder in iter_pseudobulk_dirs(self.pseudobulk_dir):
             doc_aliases = self.pseudobulk_folders_docs[
                 folder
@@ -273,7 +285,8 @@ class UploadState:
         keys: Collection[str] | None = None,
     ) -> None:
         """Write rows as TSV without quoting (important for JSON fields like attachment).
-        Return upload line for this dataset
+
+        Also append the upload line for this dataset to the submission script.
         """
         if len(rows) == 0:
             return
@@ -286,25 +299,27 @@ class UploadState:
         outfile.parent.mkdir(exist_ok=True)
         with outfile.open("wt") as f_out:
             writer = csv.DictWriter(
-                f_out, fieldnames=sorted(keys), delimiter="\t", quoting=csv.QUOTE_NONE
+                f_out,
+                fieldnames=sorted(keys),
+                delimiter="\t",
+                quoting=csv.QUOTE_NONE,
+                quotechar=None,
             )
             writer.writeheader()
             for row in rows:
                 writer.writerow(row)
         self.config.logger.info(f"Wrote {len(rows)} rows to {outfile}")
 
-        step_description = (
-            "" if analysis_step is None else f" for step {analysis_step.value}"
-        )
+        step_description = "" if analysis_step is None else f" for step {analysis_step.value}"
+        self.submission_rows.append(f"1>&2 echo Register {upload_type}{step_description}")
         self.submission_rows.append(
-            f"1>&2 echo Register {upload_type}{step_description}"
-        )
-        self.submission_rows.append(
-            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode" --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f'igvf-portal register $dry_run_arg --igvf-mode "$igvf_mode"'
+            f' --profile-id {upload_type} --infile "{self.upload_tsvs_dir.name}/{outfile_name}"'
+            f' --log-level "{self.log_level}"'
         )
 
     def write_upload_state(self) -> None:
-        """Write the TSVs needed to upload to the IGVF portal"""
+        """Write the TSVs needed to upload to the IGVF portal."""
         if self.upload_tsvs_dir.exists():
             shutil.rmtree(self.upload_tsvs_dir)
         # Write upload TSVs
@@ -326,9 +341,7 @@ class UploadState:
             # add metadata to check
             for row in pseudobulk_rows:
                 self.required_cell_ids.add(Alias(row["cell_type"]))
-                self.required_sample_ids.update(
-                    cast(list[Alias], row["samples"].split(","))
-                )
+                self.required_sample_ids.update(cast(list[Alias], row["samples"].split(",")))
         # then matrix, signal and tabular files in order of step number
         for (
             analysis_step,
@@ -366,19 +379,18 @@ class UploadState:
         out.chmod(out.stat().st_mode | stat.S_IEXEC)
         self.config.logger.info(f"Wrote submission script to {out}")
 
-    def _check_required_id(
-        self, metadata_id: Alias | AccessionId, description: str
-    ) -> int:
+    def _check_required_id(self, metadata_id: Alias | AccessionId, description: str) -> int:
         try:
-            self.config.lookup_record(metadata_id)
+            # only checks that the record exists, so use the object frame, as the upload rows that
+            # read these records do
+            self.config.lookup_record(metadata_id, frame="object")
             return 0
         except ValueError as value_error:
-            self.config.logger.error(
-                f"Checking {description} {metadata_id}: {value_error}"
-            )
+            self.config.logger.error(f"Checking {description} {metadata_id}: {value_error}")
             return 1
 
     def check_required_metadata(self) -> None:
+        """Raise ValueError if any required cell, sample, or format spec record is missing."""
         num_errors = 0
         for cell_id in self.required_cell_ids:
             num_errors += self._check_required_id(cell_id, "cell ID")

@@ -1,6 +1,6 @@
 [project]
 name = "igvf-portal"
-version = "2.0.0"
+version = "2.0.1"
 description = "Add your description here"
 readme = "README.md"
 authors = [
@@ -28,31 +28,99 @@ libc = { family = "glibc", version = "2.17" }
 [tool.pixi.pypi-dependencies]
 igvf-portal = { path = ".", editable = true }
 igvf-utils = { git = "https://github.com/IGVF-DACC/igvf_utils.git" }
-igvf-client = { git = "https://github.com/IGVF-DACC/igvf-python-client.git" }
 gspread = "==6.2.1"
 
 [tool.pixi.tasks]
-lint = "ruff check --select I --fix ."
+lint = "ruff check --fix ."
 format = "ruff format ."
 types = "ty check ."
-checks = {depends-on = ["lint", "format", "types"]}
+test = "pytest"
+checks = {depends-on = ["lint", "format", "types", "test"]}
 
 [tool.pixi.dependencies]
 python = "3.14.6.*"
+python-freethreading = "3.14.6.*"
 aria2 = { version = "1.37.0.*", channel = "conda-forge" }
 # NOTE: igvf-utils needs pillow, but pillow publishes no glibc 2.17 wheel for python 3.14, so take it
 # from conda-forge (which builds for glibc 2.17) rather than from PyPI.
 pillow = { version = ">=12.3.0,<13", channel = "conda-forge" }
 
-[tool.pixi.feature.dev.dependencies]
-ty = { version = "0.0.60.*", channel = "conda-forge" }
-ruff = { version = "0.15.22.*", channel = "conda-forge" }
+# The conda packages require the GIL-enabled Python ABI; PyPI distributes standalone binaries.
+[tool.pixi.feature.dev.pypi-dependencies]
+ty = "==0.0.84"
+ruff = "==0.16.9"
+pytest = "==9.1.1"
 
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }
 
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = ["--strict-markers"]
+
+[tool.ruff]
+line-length = 100
+output-format = "full"
+# NOTE: target-version is inferred from project.requires-python
+
+[tool.ruff.lint]
+select = [
+    "A",      # builtin shadowing
+    "ANN",    # missing type annotations (mypy's disallow_untyped_defs/incomplete_defs)
+    "ARG",    # unused arguments
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "C901",   # McCabe complexity
+    "D",      # pydocstyle, google convention (below)
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "LOG",    # flake8-logging
+    "LOG015", # (preview rule) prohibit calls to the root logger
+    "N",      # PEP8 naming
+    "PGH",    # pygrep-hooks: blanket "type: ignore" (mypy's ignore-without-code)
+    "PT",     # pytest style
+    "RUF",    # ruff-specific, including unused noqa comments (RUF100)
+    "SIM",    # simplify
+    "UP",     # pyupgrade, to the target python version
+    "W",      # pycodestyle warnings
+]
+ignore = [
+    "D100", # missing docstring in public module
+    "D104", # missing docstring in public package
+]
+# bugbear fixes can change behavior, so require them to be made by hand
+unfixable = ["B"]
+# NOTE: only preview rules explicitly selected above (e.g. LOG015) are enforced
+preview = true
+explicit-preview-rules = true
+
+[tool.ruff.lint.flake8-annotations]
+# allow **kwargs: Any, for keyword arguments that are passed on to another function
+allow-star-arg-any = true
+
+[tool.ruff.lint.per-file-ignores]
+"test/**.py" = [
+    "D103", # missing docstring in public function: test names describe the test
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ty.rules]
+# mypy's possibly-undefined
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+possibly-missing-import = "error"
+division-by-zero = "error"
+
+[tool.ty.terminal]
+# fail on warnings too, e.g. unused ignore comments and redundant casts (mypy's warn_unused_ignores
+# and warn_redundant_casts)
+error-on-warning = true
+
 [tool.ty.environment]
-python = ".pixi/envs/default/bin/python3"
+python = ".pixi/envs/default"
 
 [dependency-groups]
 dev = ["boto3-stubs[s3]>=1.43.90,<2"]

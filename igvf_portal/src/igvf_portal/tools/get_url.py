@@ -4,14 +4,12 @@ from types import MappingProxyType
 from typing import Final, TextIO, cast
 
 from igvf_portal import utils
+from igvf_portal.connection import PConnection
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import ContentType, IgvfMode, MultipleRecordsAction
-from igvf_portal.igvf_lookup import IgvfLookup
 from igvf_portal.types import AccessionId, IgvfRecord
 
-HEADERS: Final[MappingProxyType[str, str]] = MappingProxyType(
-    {"accept": "application/json"}
-)
+HEADERS: Final[MappingProxyType[str, str]] = MappingProxyType({"accept": "application/json"})
 STDIN: Final[Path] = Path("-")
 
 
@@ -19,62 +17,67 @@ def _get_content_type_record(
     analysis_set_record: IgvfRecord,
     content_type: ContentType,
     multiple_records_action: MultipleRecordsAction,
-    igvf_lookup: IgvfLookup,
+    connection: PConnection,
     logger: Logger,
 ) -> IgvfRecord | None:
     content_type_records = [
         file_record
         for file_record in analysis_set_record["files"]
-        if file_record["status"] != "deleted"
-        and file_record["content_type"] == content_type.value
+        if content_type.is_wanted(file_record)
     ]
     for record in content_type_records:
-        logger.info(
-            f"Found {content_type.value} file with accession {record['accession']}."
-        )
-    match len(content_type_records), multiple_records_action:
+        logger.info(f"Found {content_type.value} file with accession {record['accession']}.")
+    num_found = len(content_type_records)
+    match num_found, multiple_records_action:
         case 0 | 1, _:
             pass
         case _, MultipleRecordsAction.RAISE:
             pass
         case _, MultipleRecordsAction.KEEP_FILTERED:
             logger.info("Keeping filtered records.")
-            # need to look up full record to get filtered status
+            # the embedded file records lack filtered, the file's own property
             content_type_records = [
                 record
                 for record in content_type_records
-                if igvf_lookup.lookup_record(record["accession"]).get("filtered", False)
+                if connection.lookup_record(record["accession"], frame="object").get(
+                    "filtered", False
+                )
             ]
         case _, MultipleRecordsAction.KEEP_UNFILTERED:
             logger.info("Keeping unfiltered records.")
             content_type_records = [
                 record
                 for record in content_type_records
-                if not igvf_lookup.lookup_record(record["accession"]).get(
+                if not connection.lookup_record(record["accession"], frame="object").get(
                     "filtered", False
                 )
             ]
     for record in content_type_records:
-        logger.info(
-            f"Kept {content_type.value} file with accession {record['accession']}."
-        )
-    match len(content_type_records):
-        case 0:
+        logger.info(f"Kept {content_type.value} file with accession {record['accession']}.")
+    match len(content_type_records), num_found:
+        case 0, 0:
             return None
-        case 1:
+        case 0, _:
+            # e.g. every candidate was filtered under KEEP_UNFILTERED. Returning None would quietly
+            # drop this data type from the pipeline.
+            raise ValueError(
+                f"Found {num_found} {content_type.value} files for "
+                f"{analysis_set_record['accession']}, but none satisfied {multiple_records_action}"
+            )
+        case 1, _:
             return content_type_records[0]
         case _:
             raise ValueError(
-                f"Found {len(content_type_records)} {content_type.value} files for {analysis_set_record['accession']}"
+                f"Found {len(content_type_records)} {content_type.value} files for "
+                f"{analysis_set_record['accession']}"
             )
 
 
 def _write_download_entry(
     record: IgvfRecord | None,
     content_type: ContentType,
-    igvf_mode: IgvfMode,
-    igvf_portal_region: str,
     accession: AccessionId,
+    connection: PConnection,
     f_out: TextIO,
     logger: Logger,
 ) -> None:
@@ -82,14 +85,19 @@ def _write_download_entry(
     if record is None:
         logger.info(f"Got no {content_type.value} files.")
     else:
-        url = utils.get_record_http_url(
-            record,
-            igvf_portal_region=igvf_portal_region,
-            igvf_mode=igvf_mode,
-        )
+        url = connection.get_record_http_url(record)
         logger.info(f"\tGot URL for {content_type.value}: {url}")
         f_out.write(f"{url}\n")
         f_out.write(f"  out={accession}.{content_type.extension}\n")
+
+
+def _get_output_accession(input_record: IgvfRecord, content_type: ContentType) -> AccessionId:
+    """Get default output accession for saved download file names."""
+    match content_type:
+        case ContentType.PEAKS | ContentType.GENOME_REFERENCE:
+            return input_record["accession"]
+        case _:
+            return input_record["file_set"]["accession"]
 
 
 def get_url(
@@ -100,14 +108,14 @@ def get_url(
     igvf_mode: IgvfMode = IgvfMode.prod,
     multiple_records_action: MultipleRecordsAction = MultipleRecordsAction.KEEP_UNFILTERED,
     accession_delimiter: str = ";",
-):
-    """Get download URLs for raw RNA h5ad and fragments bed.gz.
+) -> None:
+    """Get download URLs for RNA matrices, fragments, peaks, and reference FASTAs.
 
     Three forms are acceptible input accessions:
     1. Input accession can be for an AnalysisSet, in which case the IGVF Portal is queried to find
     matrix and fragment files.
-    2. Alternatively it may be the accession for a matrix or fragments file. That is downloaded to
-    a file name determined by its file_set accession.
+    2. Alternatively it may be the accession for a matrix, fragments, peaks, or reference FASTA
+    file. The output name uses its file_set accession, or its own accession for a reference FASTA.
     3. It can be an `accession_delimiter`-separated tuple specifying input_accession and
     output_accession. This works like cases 1 and 2 except that the output file-name is set to use
     the output accession as its base.
@@ -120,7 +128,7 @@ def get_url(
         accession: Analysis set accession to get URLs for.
         igvf_portal_region: S3 region for the IGVF portal S3 backing.
         output: File to write URLs to. If "-", write to stdout.
-        igvf_mode: "prod", "staging", or "sandbox"
+        igvf_mode: Which IGVF server to use: "prod" or "staging"
         multiple_records_action: If more than one matrix/fragments files are found:
           if KEEP_FILTERED, keep filtered records
           if KEEP_UNFILTERED, keep unfiltered records
@@ -132,7 +140,7 @@ def get_url(
     logger = utils.get_logger_from_file(__file__)
     logger.info(f"Version: {VERSION}")
 
-    igvf_lookup = IgvfLookup.new(igvf_mode)
+    connection = PConnection.new(igvf_mode, region_name=igvf_portal_region)
     if accession_delimiter in accession:
         input_accession, output_accession = cast(
             tuple[AccessionId, AccessionId], accession.split(accession_delimiter, 1)
@@ -140,7 +148,7 @@ def get_url(
     else:
         input_accession = AccessionId(accession)
         output_accession = None
-    input_record = igvf_lookup.lookup_record(input_accession)
+    input_record = connection.lookup_record(input_accession)
 
     if f"{output}" == "-":
         output = Path("/dev/stdout")
@@ -148,22 +156,21 @@ def get_url(
     with output.open("at") as f_out:
         if "AnalysisSet" in input_record["@type"]:
             if output_accession is None:
-                output_accession = AccessionId(input_record["accession"])
+                output_accession = input_record["accession"]
             # lookup matrices and fragments from portal
             for content_type in (ContentType.MATRIX, ContentType.FRAGMENTS):
                 record = _get_content_type_record(
                     analysis_set_record=input_record,
                     content_type=content_type,
                     multiple_records_action=multiple_records_action,
-                    igvf_lookup=igvf_lookup,
+                    connection=connection,
                     logger=logger,
                 )
                 _write_download_entry(
                     record=record,
                     content_type=content_type,
-                    igvf_mode=igvf_mode,
-                    igvf_portal_region=igvf_portal_region,
                     accession=output_accession,
+                    connection=connection,
                     f_out=f_out,
                     logger=logger,
                 )
@@ -171,15 +178,28 @@ def get_url(
             if input_record["content_type"] in (
                 ContentType.MATRIX.value,
                 ContentType.FRAGMENTS.value,
+                ContentType.PEAKS.value,
+                ContentType.GENOME_REFERENCE.value,
             ):
+                content_type = ContentType(input_record["content_type"])
+                # Only the format is checked: a file named explicitly is wanted whatever its
+                # upload_status (fix_bad_beds.nf downloads BEDs that failed validation).
+                if input_record.get("file_format") not in content_type.file_formats:
+                    raise ValueError(
+                        f"{input_record['accession']} is a {content_type.value} file in format "
+                        f"{input_record.get('file_format')}, but only "
+                        f"{', '.join(sorted(content_type.file_formats))} can be used."
+                    )
                 if output_accession is None:
-                    output_accession = input_record["file_set"]["accession"]
+                    output_accession = _get_output_accession(
+                        input_record, content_type=content_type
+                    )
+
                 _write_download_entry(
                     record=input_record,
-                    content_type=ContentType[input_record["content_type"]],
-                    igvf_mode=igvf_mode,
-                    igvf_portal_region=igvf_portal_region,
+                    content_type=content_type,
                     accession=output_accession,
+                    connection=connection,
                     f_out=f_out,
                     logger=logger,
                 )
@@ -189,5 +209,6 @@ def get_url(
                 )
         else:
             raise ValueError(
-                f"Got accession for record with @type: {input_record.get('@type')} that does not have a content_type."
+                f"Got accession for record with @type: {input_record.get('@type')} that does not "
+                "have a content_type."
             )

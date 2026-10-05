@@ -4,7 +4,7 @@ from enum import (
     StrEnum,
 )
 
-from igvf_portal.types import Alias
+from igvf_portal.types import Alias, IgvfRecord
 
 
 class AnalysisStep(Enum):
@@ -33,6 +33,7 @@ class AnalysisStep(Enum):
 
     @property
     def step_num(self) -> int:
+        """Ordinal number of this step within the pseudobulking pipeline."""
         match self:
             case AnalysisStep.PSEUDOBULK_ATAC_SEQ:
                 return 1
@@ -45,18 +46,51 @@ class AnalysisStep(Enum):
 
 
 class ContentType(Enum):
-    """Cell with content type"""
+    """Enum for select IGVF Portal content_types."""
 
     MATRIX = "cell by gene matrix"
     FRAGMENTS = "fragments"
+    PEAKS = "peaks"
+    GENOME_REFERENCE = "genome reference"
 
     @property
     def extension(self) -> str:
+        """File extension used for files of this content type."""
         match self:
             case ContentType.MATRIX:
                 return "h5ad"
             case ContentType.FRAGMENTS:
                 return "bed.gz"
+            case ContentType.PEAKS:
+                return "tsv.gz"
+            case ContentType.GENOME_REFERENCE:
+                return "fasta.gz"
+
+    @property
+    def file_formats(self) -> frozenset[str]:
+        """Allowed file formats used for desired files of this content type."""
+        match self:
+            case ContentType.MATRIX:
+                return frozenset({"h5ad"})
+            case ContentType.FRAGMENTS:
+                return frozenset({"tsv", "bed"})
+            case ContentType.PEAKS:
+                return frozenset({"bed"})
+            case ContentType.GENOME_REFERENCE:
+                return frozenset({"fasta"})
+
+    @staticmethod
+    def is_usable(record: IgvfRecord) -> bool:
+        """Get whether a file record is neither deleted nor invalidated, whatever its type."""
+        return record.get("status") != "deleted" and record.get("upload_status") != "invalidated"
+
+    def is_wanted(self, record: IgvfRecord) -> bool:
+        """Get whether a record is of this content type and wanted."""
+        return (
+            self.is_usable(record)
+            and record.get("content_type") == self.value
+            and record.get("file_format") in self.file_formats
+        )
 
 
 class IgvfMode(StrEnum):
@@ -64,16 +98,14 @@ class IgvfMode(StrEnum):
 
     prod = "prod"
     staging = "staging"
-    sandbox = "sandbox"
 
     @property
-    def portal_api_url(self) -> str:
+    def url(self) -> str:
+        """Base API URL of the IGVF Portal for this access mode."""
         match self:
             case IgvfMode.prod:
                 return "https://api.data.igvf.org"
             case IgvfMode.staging:
-                return "https://api.staging.igvf.org"
-            case IgvfMode.sandbox:
                 return "https://api.staging.igvf.org"
 
 
@@ -94,6 +126,7 @@ class PseudobulkUploadStatus(Enum):
     UNATTEMPTED = "unattempted"
     COMPLETE = "complete"
     NEEDS_FIX = "needs-fix"
+    CANNOT_PROCESS = "cannot process"
 
 
 class MultipleRecordsAction(Enum):
@@ -105,6 +138,8 @@ class MultipleRecordsAction(Enum):
 
 
 class LogLevel(Enum):
+    """Enum mapping log level names to `logging` level values."""
+
     info = logging.INFO
     debug = logging.DEBUG
     warning = logging.WARNING
@@ -114,6 +149,8 @@ class LogLevel(Enum):
 
 
 class Concurrency(Enum):
+    """Enum to describe how work is parallelized: not at all, with threads, or with processes."""
+
     NONE = None
     THREAD = "Thread"
     PROCESS = "Process"

@@ -35,7 +35,7 @@ def update_tss_insertions(
     return np_tss_insertions
 
 
-def test_bisect_left():
+def test_bisect_left() -> None:
     """Test that home-rolled cython bisect_left is correct."""
     assert bisect_left([], 5) == 0
     assert bisect_left([0, 5, 10], 0) == 0
@@ -49,7 +49,7 @@ def test_bisect_left():
     assert bisect_left([0, 5, 10], 11) == 3
 
 
-def test_bisect_right():
+def test_bisect_right() -> None:
     """Test that home-rolled cython bisect_right is correct."""
     assert bisect_right([], 5) == 0
     assert bisect_right([0, 5, 10], -1) == 0
@@ -64,7 +64,7 @@ def test_bisect_right():
 
 
 @pytest.mark.parametrize(
-    "expected_tss_insertions, position, tss_vec, strand_vec",
+    ("expected_tss_insertions", "position", "tss_vec", "strand_vec"),
     [
         ([0, 0, 1, 1, 1, 1, 0], 100, [5, 98, 99, 100, 101, 500], [1, 1, 1, 1, 1, -1]),
         ([0, 0, 0, 1, 2, 1, 0], 100, [5, 98, 99, 100, 101, 500], [1, 1, 1, 1, -1, -1]),
@@ -76,7 +76,7 @@ def test_bisect_right():
 )
 def test_update_tss_inserstions(
     expected_tss_insertions: list[int], position: int, tss_vec: list[int], strand_vec: list[int]
-):
+) -> None:
     """Verify that the update_tss_insertions function works as expected.
 
     - Use hand-calculated test cases.

@@ -1,54 +1,66 @@
 import dataclasses
-import json
-import logging
 import multiprocessing
-from collections.abc import Collection
+from collections.abc import Sequence
 from functools import cached_property
 from multiprocessing.synchronize import Lock as ProcessLock
 from threading import Lock as ThreadLock
-from typing import Callable
+from typing import (
+    Final,
+)
 
 from igvf_portal import utils
 from igvf_portal.connection import PConnection
 from igvf_portal.enums import Concurrency, IgvfMode
 
+DRY_RUN: Final[bool] = False
+NUM_TRIES: Final[int] = 3
+DELAY: Final[float] = 5.0
+BACKOFF: Final[float] = 2.0
+OVERWRITE_ARRAY_VALUES: Final[bool] = False
+REMOVE_PROPERTIES: Final[tuple[str, ...]] = ()
+UPLOAD_FILE: Final[bool] = True
+UPLOAD_DUPLICATE: Final[bool] = True
+CONTINUE_ON_FAILED_CREDENTIALS: Final[bool] = True
+EXPECT_PATCH: Final[bool] = False
+
 
 @dataclasses.dataclass(slots=False, kw_only=True)
 class RegisterConfig:
+    """Settings for registering (posting or patching) records on the IGVF Portal."""
+
     igvf_mode: IgvfMode
-    dry_run: bool
     profile_id: str
-    num_tries: int
-    delay: float
-    backoff: float
-    overwrite_array_values: bool
-    remove_properties: list[str]
-    upload_file: bool
-    upload_duplicate: bool
-    continue_on_failed_credentials: bool = True
+    dry_run: bool = DRY_RUN
+    num_tries: int = NUM_TRIES
+    delay: float = DELAY
+    backoff: float = BACKOFF
+    overwrite_array_values: bool = OVERWRITE_ARRAY_VALUES
+    remove_properties: Sequence[str] = REMOVE_PROPERTIES
+    upload_file: bool = UPLOAD_FILE
+    upload_duplicate: bool = UPLOAD_DUPLICATE
+    continue_on_failed_credentials: bool = CONTINUE_ON_FAILED_CREDENTIALS
+    expect_patch: bool = EXPECT_PATCH
+
     concurrency: Concurrency = Concurrency.NONE
 
     @cached_property
     def thread_lock(self) -> ThreadLock:
+        """Lock shared by connections when running with thread concurrency."""
         return ThreadLock()
 
     @cached_property
     def process_lock(self) -> ProcessLock:
+        """Lock shared by connections when running with process concurrency."""
         return multiprocessing.Lock()
 
     @property
     def rm_patch(self) -> bool:
+        """Whether any properties should be removed when patching."""
         return len(self.remove_properties) > 0
 
     @property
-    def cleaned_profile_id(self) -> str:
-        profile_id = self.profile_id.strip("/").split("/", 1)[0].lower()
-        # Multi-word profile names are hypen-separated, i.e. genetic-modifications.
-        profile_id = profile_id.replace("-", "_")
-        return profile_id
-
-    @property
     def new_connection(self) -> PConnection:
+        """New submission connection, using the lock appropriate to the concurrency mode."""
         match self.concurrency:
             case Concurrency.NONE:
                 lock = None
@@ -62,17 +74,7 @@ class RegisterConfig:
             dry_run=self.dry_run,
             lock=lock,
             continue_on_failed_credentials=self.continue_on_failed_credentials,
-        )
-
-    def retry[**P, R](
-        self,
-        no_retry_exceptions: Collection[type] = (json.decoder.JSONDecodeError,),
-        logger: logging.Logger | None = None,
-    ) -> Callable[[Callable[P, R]], Callable[P, R]]:
-        return utils.retry(
-            num_tries=self.num_tries,
-            delay=self.delay,
-            backoff=self.backoff,
-            no_retry_exceptions=no_retry_exceptions,
-            logger=logger,
+            upload_retry=utils.RetryPolicy(
+                num_tries=self.num_tries, delay=self.delay, backoff=self.backoff
+            ),
         )

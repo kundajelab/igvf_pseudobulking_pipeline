@@ -11,13 +11,14 @@ from contextlib import ExitStack
 from io import BufferedReader
 from pathlib import Path
 from threading import (
+    Event,
     Lock,
     Thread,
-    local,
 )
 from typing import (
     BinaryIO,
     TextIO,
+    cast,
 )
 
 import numpy as np
@@ -40,6 +41,11 @@ from pseudobulk.utils import create_and_write
 
 @dataclasses.dataclass
 class PseudobulkFiles:
+    """The output files of one pseudobulk of one analysis set.
+
+    These are its fragments, and the Tn5 insertion sites of its pseudoreplicates.
+    """
+
     pseudorep1_out: TextIO
     pseudorep2_out: TextIO
     pseudorep_t_out: TextIO
@@ -52,7 +58,15 @@ class PseudobulkFiles:
         exit_stack: ExitStack,
         output_dir: Path,
         analysis_set_accession: str,
-    ) -> "PseudobulkFiles":
+    ) -> PseudobulkFiles:
+        """Open the output files of a pseudobulk for appending, creating their folders as needed.
+
+        Args:
+            pseudobulk: ID of the pseudobulk.
+            exit_stack: ExitStack to close the files with.
+            output_dir: Folder to write the output files under.
+            analysis_set_accession: Accession of the analysis set the fragments are from.
+        """
         file_base = f"{pseudobulk}"
         return PseudobulkFiles(
             pseudorep1_out=exit_stack.enter_context(
@@ -90,6 +104,10 @@ class PseudobulkFiles:
         )
 
     def write_fragment(self, fragment: Fragment) -> None:
+        """Write a fragment, and its insertion sites to pseudorep T and one of pseudoreps 1 and 2.
+
+        Which of pseudoreps 1 and 2 is chosen at random.
+        """
         shifted = fragment.shifted
         start_point = shifted.start_point
         end_point = shifted.end_point
@@ -106,10 +124,10 @@ class PseudobulkFiles:
 
 @dataclasses.dataclass(slots=True, kw_only=True)
 class SharedThreadData:
+    """State shared by the threads that read a fragments file and QC its fragments."""
+
     fragments_in: BinaryIO
     fragments_deque: deque[bytes | None]
-    fragments_in_lock: Lock
-    thread_local_data: local
     tss_half_window: int
     tss_locs: dict[Contig, tuple[POS_ARRAY, POS_ARRAY]]
     pseudobulk_barcodes: set[Barcode]
@@ -121,6 +139,10 @@ class SharedThreadData:
     num_workers: int
     num_lines: int = 0
     num_shutdown: int = 0
+    abort: Event = dataclasses.field(default_factory=Event)
+    """Set when any thread fails, to tell the others to stop."""
+    exception: BaseException | None = None
+    """The first exception raised in any thread, to be re-raised by the main thread."""
 
     @classmethod
     def new(
@@ -133,12 +155,11 @@ class SharedThreadData:
         output_dir: Path,
         logger: logging.Logger,
         num_workers: int,
-    ) -> "SharedThreadData":
+    ) -> SharedThreadData:
+        """Create the shared state, loading the Transcription Start Sites (TSS) from tss_tsv."""
         return cls(
             fragments_in=fragments_in,
             fragments_deque=fragments_deque,
-            fragments_in_lock=Lock(),
-            thread_local_data=local(),
             tss_half_window=tss_half_window,
             tss_locs=utils.load_tss_locs(tss_tsv),
             pseudobulk_barcodes=pseudobulk_barcodes,
@@ -156,17 +177,23 @@ class SharedThreadData:
             is_pseudobulk=barcode_sample in self.pseudobulk_barcodes,
         )
 
-    @property
-    def index_buffer(self) -> POS_ARRAY:
-        index_buffer = getattr(self.thread_local_data, "index_buffer", None)
-        if index_buffer is None:
-            index_buffer = np.empty((2 * self.tss_half_window + 1,), dtype=utils.POS_DTYPE)
-            self.thread_local_data.index_buffer = index_buffer
-        return index_buffer
+    def record_exception(self, exception: BaseException) -> None:
+        """Record an exception raised in a thread, and tell the other threads to stop."""
+        with self.shutdown_lock:
+            if self.exception is None:  # keep the first, it is the cause
+                self.exception = exception
+        self.abort.set()
 
     @property
     def next_fragment(self) -> Fragment | None:
+        """Get the next fragment from the queue, waiting for one if it is empty.
+
+        Returns:
+            The next fragment, or None if there are no more, or the threads are aborting.
+        """
         while True:
+            if self.abort.is_set():
+                return None
             try:
                 if len(self.fragments_deque) > 0:
                     fragment_line = self.fragments_deque.popleft()
@@ -181,6 +208,7 @@ class SharedThreadData:
         return Fragment.from_line(fragment_line.decode("utf-8"))
 
     def get_barcode_qc(self, barcode_sample: Barcode) -> BarcodeQc:
+        """Get the QC of a barcode, creating it if this is the first fragment of the barcode."""
         barcode_qc = self.barcode_qcs.get(barcode_sample, None)
         if barcode_qc is None:
             with self.barcode_qcs_lock:
@@ -194,6 +222,7 @@ class SharedThreadData:
         return barcode_qc
 
     def process_fragment(self, fragment: Fragment) -> None:
+        """Update the QC of a fragment's barcode with the fragment."""
         # get the correct BarcodeQc
         barcode_qc = self.get_barcode_qc(fragment.barcode_sample)
 
@@ -205,6 +234,11 @@ class SharedThreadData:
             )
 
     def log_progress(self, elapsed_time: float) -> None:
+        """Log the number of lines processed so far, and how quickly.
+
+        Args:
+            elapsed_time: Seconds since processing started.
+        """
         human_elapsed_time = utils.elapsed_time(elapsed_time)
         self.logger.info(
             f"Processed {self.num_lines} lines in {human_elapsed_time} "
@@ -213,29 +247,44 @@ class SharedThreadData:
         self.logger.info(f"Have {len(self.barcode_qcs)} unique barcode QCs")
 
 
+# NOTE: an exception that escapes a thread is only printed, and the thread that raised it just ends,
+# so the thread functions record it instead, for _run_qc to re-raise once every thread has stopped.
 def _thread_qc(shared_thread_data: SharedThreadData) -> None:
     try:
         fragment = shared_thread_data.next_fragment
         while fragment is not None:
             shared_thread_data.process_fragment(fragment)
             fragment = shared_thread_data.next_fragment
+    except BaseException as exception:
+        shared_thread_data.record_exception(exception)
     finally:
         with shared_thread_data.shutdown_lock:
             shared_thread_data.num_shutdown += 1
 
 
 def _fill_deque(shared_thread_data: SharedThreadData) -> None:
+    """Fill shared_thread_data.fragments_deque as needed to keep the process threads busy.
+
+    Args:
+        shared_thread_data: Shared data used by processing threads
+    """
     try:
         batch_size = 5000
         max_queue_size = 10000
         sleep_time = 0.001
         fragments_deque = shared_thread_data.fragments_deque
+        abort = shared_thread_data.abort
 
-        for batch in itertools.batched(shared_thread_data.fragments_in, batch_size):
+        for batch in itertools.batched(shared_thread_data.fragments_in, batch_size, strict=False):
+            if abort.is_set():
+                return
             while len(fragments_deque) > max_queue_size:
-                time.sleep(sleep_time)
+                if abort.wait(sleep_time):
+                    return
             fragments_deque.extend(batch)
 
+    except BaseException as exception:
+        shared_thread_data.record_exception(exception)
     finally:
         for _ in range(shared_thread_data.num_workers):
             shared_thread_data.fragments_deque.append(None)
@@ -252,6 +301,20 @@ def _run_qc(
     pseudobulk_barcodes: set[Barcode],
     logger: logging.Logger,
 ) -> dict[Barcode, BarcodeQc]:
+    """Run QC of fragments in thread-parallelism.
+
+    Args:
+        fragments_file: Path to fragments (.bed.gz) file to split.
+        num_workers: Number of threads to use for processing.
+        tss_half_window: half_window: Half the size of the window to check for TSS overlaps.
+        tss_tsv: Path to TSV with species-dependent Transcription Start Sites (TSS)
+        output_dir: Folder to write the output files under.
+        pseudobulk_barcodes: Barcodes that are in pseudobulks to annotate.
+        logger: logger to use
+
+    Returns:
+        Dict from Barcode to BarcodeQC with QC data.
+    """
     opener = gzip.open if fragments_file.suffix == ".gz" else open
     with (
         opener(f"{fragments_file}", "rb") as fragments_in_raw,
@@ -268,10 +331,13 @@ def _run_qc(
             logger=logger,
             num_workers=num_workers,
         )
-        threads = tuple(
-            Thread(target=_thread_qc, name=f"Thread-{idx}", args=(shared_thread_data,))
-            for idx in range(num_workers)
-        ) + (Thread(target=_fill_deque, name=f"Thread-{num_workers}", args=(shared_thread_data,)),)
+        threads = (
+            *(
+                Thread(target=_thread_qc, name=f"Thread-{idx}", args=(shared_thread_data,))
+                for idx in range(num_workers)
+            ),
+            Thread(target=_fill_deque, name=f"Thread-{num_workers}", args=(shared_thread_data,)),
+        )
         for thread in threads:
             thread.start()
         start_time = time.time()
@@ -288,6 +354,8 @@ def _run_qc(
         )
         for thread in threads:
             thread.join()
+    if shared_thread_data.exception is not None:
+        raise shared_thread_data.exception
     shared_thread_data.log_progress(elapsed_time=time.time() - start_time)
     return shared_thread_data.barcode_qcs
 
@@ -303,14 +371,15 @@ def _write_qc(
 ) -> None:
     """Write QC reports and sparse matrix of Transcription Start Sites."""
     logger.info("Writing QC reports")
-    barcodes = list(barcode_qcs.keys())
+    # sort, so that the rows are in the same order on every run, whatever order the threads ran in
+    barcodes = sorted(barcode_qcs.keys())
     num_barcodes = len(barcodes)
     tss_row_len = 2 * tss_half_window + 1
-    # Fill the compressed row buffers of the TSS matrix directly, instead of building one sparse array
-    # per barcode and stacking them at the end: scipy.sparse.vstack has to allocate a second copy of
-    # every insertion while the per-barcode arrays are still alive, which doubles peak memory. Each
-    # per-barcode sparse array also costs ~1 KB of container overhead on top of its insertions, which
-    # dominates for the many barcodes that have very few insertions.
+    # Fill the compressed row buffers of the TSS matrix directly, instead of building one sparse
+    # array per barcode and stacking them at the end: scipy.sparse.vstack has to allocate a second
+    # copy of every insertion while the per-barcode arrays are still alive, which doubles peak
+    # memory. Each per-barcode sparse array also costs ~1 KB of container overhead on top of its
+    # insertions, which dominates for the many barcodes that have very few insertions.
     # NOTE: the buffers are sized exactly, using one cheap pass to count the non-zero insertions, so
     # that they never have to be grown (which would copy them as well).
     total_insertions = sum(
@@ -350,7 +419,8 @@ def _write_qc(
             del barcode_qc.tss_insertions
             del barcode_qc
             if idx % 10000 == 9999:
-                barcode_qcs = {key: val for key, val in barcode_qcs.items()}
+                # rebuild the dict, to release the space of the entries popped so far
+                barcode_qcs = {key: val for key, val in barcode_qcs.items()}  # noqa: C416
 
     del barcode_qcs
     logger.info("Writing TSS sparse matrix.")
@@ -375,9 +445,8 @@ def split_fragments(
     tss_half_smooth_window: int = 5,
     num_threads: int = 0,
     random_seed: int = 42,
-):
-    """
-    Process a fragments file and split it into pseudobulks.
+) -> None:
+    """Process a fragments file and split it into pseudobulks.
 
     Args:
         fragments_file: Path to fragments (.bed.gz) file to split.
@@ -433,7 +502,8 @@ def split_fragments(
     random.seed(random_seed)
     num_pseudobulk_barcodes: int = 0
 
-    # all the fragments are QC-ed and split, write fragments to appropriate pseudobulk files
+    # all the fragments are QC-ed, group the barcodes by pseudobulk
+    pseudobulk_barcode_qcs: dict[PseudobulkName, list[BarcodeQc]] = {}
     for barcode_sample, barcode_qc in barcode_qcs.items():
         if barcode_qc.fragments is None:
             continue  # this is not a pseuobulk QC
@@ -443,6 +513,22 @@ def split_fragments(
             continue
 
         num_pseudobulk_barcodes += 1
+        pseudobulk_barcode_qcs.setdefault(pseudobulk, []).append(barcode_qc)
+
+    # write fragments to appropriate pseudobulk files
+    # NOTE: the worker threads collect fragments, and create BarcodeQcs, in whatever order they
+    # happen to process them. Sort the pseudobulks and their fragments so that the random draws
+    # splitting them into pseudoreps are made in the same order on every run.
+    for pseudobulk in sorted(pseudobulk_barcode_qcs):
+        fragments: list[Fragment] = []
+        for barcode_qc in pseudobulk_barcode_qcs.pop(pseudobulk):
+            for fragment in cast(list[Fragment], barcode_qc.fragments):
+                # Skip nonstandard chromosomes
+                if fragment.contig in allowed_chrs:
+                    barcode_qc.annotated = True
+                    fragments.append(fragment)
+            barcode_qc.fragments = []
+        fragments.sort(key=lambda frag: (frag.contig, frag.start, frag.end, frag.barcode_sample))
 
         with ExitStack() as exit_stack:
             pseudobulk_out = PseudobulkFiles.new(
@@ -451,12 +537,9 @@ def split_fragments(
                 output_dir=output_dir,
                 analysis_set_accession=analysis_set_accession,
             )
-            for fragment in barcode_qc.fragments:
-                # Skip nonstandard chromosomes
-                if fragment.contig in allowed_chrs:
-                    barcode_qc.annotated = True
-                    pseudobulk_out.write_fragment(fragment)
-            barcode_qc.fragments = []
+            for fragment in fragments:
+                pseudobulk_out.write_fragment(fragment)
+        del fragments
 
     logger.info(f"Wrote {num_pseudobulk_barcodes} pseudobulk barcodes.")
 

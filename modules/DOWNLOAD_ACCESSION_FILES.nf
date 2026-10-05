@@ -19,6 +19,9 @@ process DOWNLOAD_ACCESSION_FILES {
     output:
         path("*.bed.gz"), optional: true, emit: fragments_files
         path("*.h5ad"), optional: true, emit: counts_matrix_files
+        // Note that peaks files are only called from the fix_bad_beds.nf workflow
+        path("*.tsv.gz"), optional: true, emit: peaks_files
+        path("*.fasta.gz"), optional: true, emit: fasta_files
 
     script:
     aria2c_input_file = "aria2c_input.txt"
@@ -31,7 +34,7 @@ process DOWNLOAD_ACCESSION_FILES {
             --output "${aria2c_input_file}" \
             --igvf-mode "${igvf_mode}"
     done
-    if [[ -z "${aria2c_input_file}" ]]; then
+    if [[ ! -s "${aria2c_input_file}" ]]; then
         1>&2 echo "Did not find any files to download."
         exit 1
     fi

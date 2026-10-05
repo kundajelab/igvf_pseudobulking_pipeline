@@ -1,17 +1,17 @@
 import csv
 import json
-import multiprocessing
 import re
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import local
 from typing import Final, cast
 
 import igvf_utils.utils as iuu
-from igvf_utils.profiles import IgvfSchema
+from igvf_utils.profiles import IgvfSchema, Profiles
 
+import igvf_portal.register_config as config_defaults
 from igvf_portal import utils
 from igvf_portal.connection import PConnection
 from igvf_portal.constants import VERSION
@@ -33,7 +33,7 @@ _THREAD_LOCAL_DATA: local = local()
 
 """
 Given a tab-delimited, JSON, or JSONL input file containing one or more records belonging to one
-of the profiles listed on the IGVF Portal (such as https://sandbox.igvf.org/profiles/document.json),
+of the profiles listed on the IGVF Portal (such as https://staging.igvf.org/profiles/document.json),
 either POSTS or PATCHES the records. The default is to POST each record; to PATCH instead, see
 the ``--patch`` option.
 
@@ -63,55 +63,51 @@ It is used when patching objects to indicate the identifier of the record to pat
 """
 
 
-def _init_worker(
-    register_config: RegisterConfig,
-    schema: IgvfSchema,
-) -> None:
-    """Initialize _REGISTER_CONFIG and _CONNECTION in worker process.
+def _init_worker(register_config: RegisterConfig, profiles: Profiles) -> None:
+    """Initialize the register config and connection for a worker thread.
 
-    Set the profile to the updated schema (so that properties are loaded).
+    The connection shares the profiles that the main thread fetched, so the workers don't each
+    fetch them again, and use the schemas whose properties are already loaded.
     """
     _THREAD_LOCAL_DATA.register_config = register_config
     connection = register_config.new_connection
-    connection.profiles.get_profile_from_id(register_config.profile_id)
-    connection.profiles._profiles[register_config.cleaned_profile_id] = schema
+    connection.use_profiles(profiles)
     _THREAD_LOCAL_DATA.connection = connection
 
 
 def _check_valid_json(prop: str, val: str, line_number: int) -> object:
-    """
-    Runs json.loads(val) to ensure valid JSON.
+    """Runs json.loads(val) to ensure valid JSON.
 
     Args:
         val: str. A string load as JSON.
         prop: str. Name of the schema property/field that stores the passed in val.
-        row_count: int. The line number from the input file that is currently being processed.
+        line_number: int. The line number from the input file that is currently being processed.
 
     Raises:
         ValueError: The input is malformed JSON.
     """
-
-    # Don't try to break down the individual pieces of a nested object. That will be too complex for this script, and will also
-    # be too complex for the end user to try and represent in some flattened way. Thus, require the end user to supply proper JSON
-    # for a nested object.
+    # Don't try to break down the individual pieces of a nested object. That will be too complex for
+    # this script, and will also be too complex for the end user to try and represent in some
+    # flattened way. Thus, require the end user to supply proper JSON for a nested object.
     json_val = json.loads(val)
     if isinstance(json_val, list):
         for item in json_val:
             if not isinstance(item, dict):
-                raise ValueError(
-                    f"Error: Invalid JSON in field '{prop}', row '{line_number}'"
-                )
+                raise ValueError(f"Error: Invalid JSON in field '{prop}', row '{line_number}'")
     return json_val
 
 
-def _typecast(field_name, value, data_type, line_num):
-    """
-    Converts the value to the specified data type. Used to convert string representations of integers
-    in the input file to integers, and string representations of booleans to booleans.
+def _typecast(
+    field_name: str, value: str, data_type: str, line_num: int
+) -> int | float | bool | str:
+    """Converts the value to the specified data type.
+
+    Used to convert string representations of integers in the input file to integers, and string
+    representations of booleans to booleans.
 
     Args:
-        field_name: The name of the field in the input file whose value is being potentially typecast.
-            Used only in error messages.
+        field_name: The name of the field in the input file whose value is being potentially
+            typecast. Used only in error messages.
         value: The value to potentially typecast.
         data_type: Specifies the data type of field_name as indicated in the IGVF profile.
         line_num: The current line number in the input file. Used only in error messages.
@@ -125,22 +121,22 @@ def _typecast(field_name, value, data_type, line_num):
             try:
                 return int(value)
             except ValueError:
-                # This will be raised if trying to convert a string representation of a float to an int.
+                # This will be raised if trying to convert a string representation of a float to an
+                # int.
                 return float(value)
         case "boolean":
             value = value.lower()
             if value not in ["true", "false"]:
                 raise ValueError(
-                    f"Can't convert value '{value}' in field '{field_name}' on line {line_num} to data type '{data_type}'."
+                    f"Can't convert value '{value}' in field '{field_name}' on line {line_num} to "
+                    f"data type '{data_type}'."
                 )
             return value == "true"
         case _:
             return value
 
 
-def _get_field_val(
-    field: str, val: str, schema: IgvfSchema, line_number: int
-) -> object | None:
+def _get_field_val(field: str, val: str, schema: IgvfSchema, line_number: int) -> object | None:
     """Get value for payload field from input str representation."""
     if len(val) == 0:
         return None
@@ -162,8 +158,8 @@ def _get_field_val(
                     val += "]"
                 return _check_valid_json(field, val, line_number)
             else:
-                # User is allowed to enter values in string literals. I'll remove them if I find them,
-                # since I'm splitting on the ',' to create a list of strings anyway:
+                # User is allowed to enter values in string literals. I'll remove them if I find
+                # them, since I'm splitting on the ',' to create a list of strings anyway:
                 val = _STR_REGEX.sub("", val)
                 # Remove optional JSON array literal since I'm tokenizing and then converting
                 # to an array regardless.
@@ -192,35 +188,56 @@ def _get_field_val(
             )
 
 
-def _iter_payloads_from_tsv(
-    schema: IgvfSchema, infile: Path
+def _iter_payloads(
+    schema: IgvfSchema, infile: Path, drop_extra_fields: bool
 ) -> Iterator[dict[str, object]]:
-    """
-    Generates the payload for each row in 'infile'.
+    match infile.suffixes:
+        case [*_parts, ".tsv"] | [*_parts, ".tsv", ".gz"]:
+            return _iter_payloads_from_tsv(
+                schema=schema, tsv=infile, drop_extra_fields=drop_extra_fields
+            )
+        case [*_parts, ".json"]:
+            return _iter_payloads_from_json(
+                schema=schema, json=infile, drop_extra_fields=drop_extra_fields
+            )
+        case _:
+            raise ValueError(f"Unknown payload specification format: {infile}")
+
+
+def _iter_payloads_from_tsv(
+    schema: IgvfSchema, tsv: Path, drop_extra_fields: bool
+) -> Iterator[dict[str, object]]:
+    """Generates the payload for each row in 'infile'.
 
     Args:
         schema: IgvfSchema. The schema of the objects to be submitted.
-        infile - str. Path to input file.
+        tsv: Path to input file.
+        drop_extra_fields: if extra fields not in the schema are specified, drop them instead of
+          raising an exception
 
-    Yields  : dict. The payload that can be used to either register or patch the metadata for each row.
+    Yields:
+        dict. The payload that can be used to either register or patch the metadata for each row.
     """
     # Fetch the schema from the IGVF Portal so we can set attr values to the
     # right type when generating the payload (dict).
-    schema_props: list[str] = [prop.name for prop in schema.properties]
-    with infile.open("rt") as fh:
-        reader = csv.DictReader(fh, delimiter="\t")
+    schema_allowed_props: frozenset[str] = frozenset(
+        {prop.name for prop in schema.properties}
+    ).union({RECORD_ID_FIELD})
+    with utils.maybe_gzipped(tsv, "r") as f_in:
+        reader = csv.DictReader(f_in, delimiter="\t", quoting=csv.QUOTE_NONE)
         if reader.fieldnames is None:
-            raise ValueError(f"Unable to parse header of {infile}")
+            raise ValueError(f"Unable to parse header of {tsv}")
         field_names: set[str] = set()
         for field in reader.fieldnames:
             if field.startswith("#"):  # non-schema field, don't use it
                 continue
-            if field not in schema_props:
-                if field != RECORD_ID_FIELD:
-                    raise ValueError(
-                        f"Unknown field name '{field}', which is not registered as a property in the specified schema at {schema.name}."
-                    )
-            field_names.add(field)
+            if field in schema_allowed_props:
+                field_names.add(field)
+            elif not drop_extra_fields:
+                raise ValueError(
+                    f"Unknown field name '{field}', which is not registered as a property in the "
+                    f"specified schema at {schema.name}."
+                )
 
         for line_number, line in enumerate(reader, start=2):
             payload = {PConnection.PROFILE_KEY: schema.name}
@@ -237,27 +254,90 @@ def _iter_payloads_from_tsv(
             yield payload
 
 
+def _iter_json_objects(json_path: Path) -> Iterator[dict[str, object]]:
+    """Yield successive JSON objects from JSON file with concatenated JSON objects."""
+    with json_path.open("rt") as f_in:
+        data = f_in.read()
+
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(data):
+        # Skip whitespace between objects
+        while idx < len(data) and data[idx].isspace():
+            idx += 1
+        if idx < len(data):
+            obj, idx = decoder.raw_decode(data, idx)
+            yield {k: _flatten_payload_value(v) for k, v in obj.items()}
+
+
+def _flatten_payload_value(val: object) -> object:
+    """Flatten structs to only include @id.
+
+    In some retrieved records, the IGVF Portal expands links into structs including additional
+    detail. This can cause resubmitting those same records to fail. So re-compact those links.
+    """
+    if isinstance(val, list):
+        return [_flatten_payload_value(_x) for _x in val]
+    elif isinstance(val, Mapping):
+        _id = val.get("@id", None)
+        return {_k: _flatten_payload_value(_v) for _k, _v in val.items()} if _id is None else _id
+    return val
+
+
+def _iter_payloads_from_json(
+    schema: IgvfSchema, json: Path, drop_extra_fields: bool
+) -> Iterator[dict[str, object]]:
+    """Generates the payload for each dict in 'infile'.
+
+    Args:
+        schema: IgvfSchema. The schema of the objects to be submitted.
+        json: Path to input file.
+        drop_extra_fields: if extra fields not in the schema are specified, drop them instead of
+          raising an exception
+
+    Yields:
+        dict. The payload that can be used to either register or patch the metadata for each row.
+    """
+    # Fetch the schema from the IGVF Portal so we can set attr values to the
+    # right type when generating the payload (dict).
+    schema_allowed_props: frozenset[str] = frozenset(
+        {prop.name for prop in schema.properties}
+    ).union({RECORD_ID_FIELD})
+    for payload in _iter_json_objects(json):
+        bad_keys = payload.keys() - schema_allowed_props
+        if len(bad_keys) > 0:
+            if drop_extra_fields:
+                payload = {k: v for k, v in payload.items() if k not in bad_keys}
+            else:
+                raise ValueError(
+                    f"Unknown field name(s) '{','.join(bad_keys)}', which are not registered as a"
+                    f" property in the specified schema at {schema.name}."
+                )
+        payload[PConnection.PROFILE_KEY] = schema.name
+        yield payload
+
+
 def _remove_and_patch_payload(payload: dict[str, object]) -> str:
-    """Execute the remove_and_patch function for the payload, using options from _REGISTER_CONFIG."""
+    """Execute the remove_and_patch function for the payload, with options from _REGISTER_CONFIG."""
     connection: PConnection = _THREAD_LOCAL_DATA.connection
     register_config: RegisterConfig = _THREAD_LOCAL_DATA.register_config
     record_id = payload.get(RECORD_ID_FIELD, False)
     if not record_id:
         raise ValueError(
-            "Can't patch payload {} since there isn't a '{}' field indicating an identifier for the record to be PATCHED.".format(
-                iuu.print_format_dict(payload), RECORD_ID_FIELD
-            )
+            f"Can't patch payload {iuu.print_format_dict(payload)} since there isn't a "
+            f"'{RECORD_ID_FIELD}' field indicating an identifier for the record to be PATCHED."
         )
     payload.pop(RECORD_ID_FIELD)
     payload.update({connection.IGVFID_KEY: record_id})
 
-    register_config.retry()(connection.remove_and_patch)(
+    connection.remove_and_patch(
         props=register_config.remove_properties,
         patch=payload,
         extend_array_values=not register_config.overwrite_array_values,
     )
 
-    return cast(list[str], payload["aliases"])[0]
+    # a patch payload identifies its record by record_id, and need not have aliases
+    return cast(str, record_id)
 
 
 def _patch_payload(payload: dict[str, object]) -> str:
@@ -267,18 +347,18 @@ def _patch_payload(payload: dict[str, object]) -> str:
     record_id = payload.get(RECORD_ID_FIELD, False)
     if not record_id:
         raise ValueError(
-            "Can't patch payload {} since there isn't a '{}' field indicating an identifier for the record to be PATCHED.".format(
-                iuu.print_format_dict(payload), RECORD_ID_FIELD
-            )
+            f"Can't patch payload {iuu.print_format_dict(payload)} since there isn't a "
+            f"'{RECORD_ID_FIELD}' field indicating an identifier for the record to be PATCHED."
         )
     payload.pop(RECORD_ID_FIELD)
     payload.update({connection.IGVFID_KEY: record_id})
 
-    register_config.retry()(connection.patch)(
+    connection.patch(
         payload=payload, extend_array_values=not register_config.overwrite_array_values
     )
 
-    return cast(list[str], payload["aliases"])[0]
+    # a patch payload identifies its record by record_id, and need not have aliases
+    return cast(str, record_id)
 
 
 def _post_payload(payload: dict[str, object]) -> str:
@@ -286,11 +366,12 @@ def _post_payload(payload: dict[str, object]) -> str:
     connection: PConnection = _THREAD_LOCAL_DATA.connection
     register_config: RegisterConfig = _THREAD_LOCAL_DATA.register_config
 
-    register_config.retry()(connection.post)(
+    connection.post(
         payload,
         require_aliases=True,
         upload_file=register_config.upload_file,
         upload_duplicate=register_config.upload_duplicate,
+        expect_patch=register_config.expect_patch,
     )
 
     return cast(list[str], payload["aliases"])[0]
@@ -300,65 +381,72 @@ def register(
     *,
     infile: Path,
     profile_id: str,
-    dry_run: bool = False,
+    dry_run: bool = config_defaults.DRY_RUN,
     igvf_mode: IgvfMode = IgvfMode.prod,
     patch: bool = False,
-    overwrite_array_values: bool = False,
-    continue_on_failed_credentials: bool = True,
-    remove_property: Iterable[str] = (),
-    tries: int = 2,
-    delay: float = 5.0,
-    backoff: float = 2.0,
-    upload_file: bool = True,
-    upload_duplicate: bool = True,
-    num_workers: int = 12,
+    overwrite_array_values: bool = config_defaults.OVERWRITE_ARRAY_VALUES,
+    continue_on_failed_credentials: bool = config_defaults.CONTINUE_ON_FAILED_CREDENTIALS,
+    remove_property: Iterable[str] = config_defaults.REMOVE_PROPERTIES,
+    drop_extra_fields: bool = False,
+    tries: int = config_defaults.NUM_TRIES,
+    delay: float = config_defaults.DELAY,
+    backoff: float = config_defaults.BACKOFF,
+    upload_file: bool = config_defaults.UPLOAD_FILE,
+    upload_duplicate: bool = config_defaults.UPLOAD_DUPLICATE,
+    expect_patch: bool = config_defaults.EXPECT_PATCH,
+    num_workers: int = 16,
     update_secs: float = 30.0,
     log_level: LogLevel = LogLevel.info,
-):
+) -> None:
     """Register data with the IGVF Portal.
 
     Args:
         infile: The JSON, JSONL, or tab-delimited input file.
         profile_id: @id of data to register
         dry_run: if True, don't actually modify the portal or upload data
-        igvf_mode: Which IGVF server to use: "prod", "staging", or "sandbox"
+        igvf_mode: Which IGVF server to use: "prod" or "staging"
         patch: if True, patch data instead of POSTing new data
         overwrite_array_values: If True, when patching data with array values, overwrite old values
           with new valus. If False, extend old data with new values.
         continue_on_failed_credentials: If True, when attempting to re-upload a file, if credentials
           cannot be obtained, skip upload and continue. If False, throw exception. Generally this
           results from a file being finalized, and not needing re-upload.
-        remove_property: Any properties specified here will be removed from the record before patching.
-        tries: Number of times to try (not retry) in case of failure.
-        delay: Wait time in seconds before retrying after failure.
-        backoff: Multipliciative scale to delay for each successive failure.
+        expect_patch: If True, then check for an existing record before attempting to post, and
+            skip immediately to creating a patch if it does.
+        remove_property: Any properties specified here will be removed from the record before
+            patching.
+        drop_extra_fields: If any non-schema fields are specified in infile, drop them instead of
+          raising an exception
+        tries: Number of times to try (not retry) uploading each file, in case of failure. Requests
+          to the Portal itself are retried separately, by the connection.
+        delay: Wait time in seconds before retrying a failed file upload.
+        backoff: Multiplicative scale to delay for each successive failed file upload.
         upload_file: If True, actually upload files when posting.
-        upload_duplicate: If True, upload file even if a duplicate record exists. Used for uploading files
-            when a record POSTed but the upload failed.
-        num_workers: Number of connections to the IGVF Portal. If <= 0, use one per CPU.
+        upload_duplicate: If True, upload file even if a duplicate record exists. Used for uploading
+            files when a record POSTed but the upload failed.
+        num_workers: Number of connections to the IGVF Portal. Must be >= 1.
         update_secs: Time in seconds between progress logs
         log_level: Log level for output
     """
     utils.check_access_keys()
-    utils.fix_igvf_logging()
+    utils.fix_igvf_logging(level=log_level.value)
     logger = utils.get_logger_from_file(__file__, level=log_level.value)
     logger.info(f"Version: {VERSION}")
 
     register_config = RegisterConfig(
         igvf_mode=igvf_mode,
-        dry_run=dry_run,
         profile_id=profile_id,
+        dry_run=dry_run,
         num_tries=tries,
         delay=delay,
         backoff=backoff,
         overwrite_array_values=overwrite_array_values,
-        remove_properties=[
-            p for property in remove_property for p in property.split(",")
-        ],
+        remove_properties=[p for prop in remove_property for p in prop.split(",")],
         upload_file=upload_file,
         upload_duplicate=upload_duplicate,
         concurrency=Concurrency.THREAD,
         continue_on_failed_credentials=continue_on_failed_credentials,
+        expect_patch=expect_patch,
     )
 
     # Get connection into submit mode:
@@ -373,18 +461,18 @@ def register(
         else _post_payload
     )
 
-    payloads = list(_iter_payloads_from_tsv(schema=schema, infile=infile))
+    payloads = list(
+        _iter_payloads(schema=schema, infile=infile, drop_extra_fields=drop_extra_fields)
+    )
 
     if num_workers <= 0:
-        num_workers = multiprocessing.cpu_count()
+        raise ValueError("num_workers must be positive.")
     with ThreadPoolExecutor(
         max_workers=num_workers,
         initializer=_init_worker,
-        initargs=(register_config, schema),
+        initargs=(register_config, connection.profiles),
     ) as executor:
-        mapped_futures = executor.map(
-            register_func, payloads, buffersize=2 * num_workers
-        )
+        mapped_futures = executor.map(register_func, payloads, buffersize=2 * num_workers)
         num_futures = len(payloads)
         t_start = time.time()
         t_last = t_start

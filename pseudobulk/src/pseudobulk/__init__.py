@@ -12,6 +12,7 @@ warnings.filterwarnings(
 
 import defopt  # noqa: E402
 
+from pseudobulk.tools.annotation_mapping import annotation_mapping  # noqa: E402
 from pseudobulk.tools.combine_accession_qc import combine_accession_qc  # noqa: E402
 from pseudobulk.tools.pseudobulk_rna import pseudobulk_rna  # noqa: E402
 from pseudobulk.tools.split_fragments import split_fragments  # noqa: E402
@@ -22,10 +23,12 @@ tools: list[Callable] = [
     pseudobulk_rna,
     summarize_pseudobulk_qc,
     combine_accession_qc,
+    annotation_mapping,
 ]
 
 
 def main() -> None:
+    """Run the pseudobulk command line tool named by the first argument."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",

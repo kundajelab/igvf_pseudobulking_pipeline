@@ -18,9 +18,6 @@ RUN echo '#!/usr/bin/env bash' > /usr/local/bin/date && \
 COPY . "/opt/$ENV_NAME"
 WORKDIR "/opt/$ENV_NAME"
 
-# git is needed to resolve git+https pypi dependencies during pixi install
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-
 # install the packages into this environment
 RUN pixi install && ls -lah
 
