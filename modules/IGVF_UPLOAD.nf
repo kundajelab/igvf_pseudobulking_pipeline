@@ -4,7 +4,8 @@ process IGVF_UPLOAD {
     secret 'IGVF_API_KEY'
     secret 'IGVF_SECRET_KEY'
     cpus 2
-    memory '4 GB'
+    memory '8 GB'
+    time 24.h  // should be plenty of time, no reason to cheap out here and try to be exact
     conda "environments/IGVF_PORTAL.yaml"
     container "${dotenv('IGVF_PORTAL_IMAGE')}"
     // A real upload should not be preempted part-way through, so send it to a queue that does not
@@ -47,10 +48,10 @@ process IGVF_UPLOAD {
         local -r pseudobulk_id=\$1
         local -r folder="pseudobulks/\$pseudobulk_id"
         mkdir -p "\$folder"
-        find -L "pseudobulks" -maxdepth 1 -type f -name "\$pseudobulk_id.*" \
-        | while read -r file; do
-            new_name=\$(basename "\$file" | sed "s/^\$pseudobulk_id\\.//")
-            mv "\$file" "\$folder/\$new_name"
+        find -L "pseudobulks" -maxdepth 1 -name "\$pseudobulk_id.*" -type f \
+        | while read -r fname; do
+            new_name=\$(basename "\$fname" | sed "s/^\$pseudobulk_id\\.//")
+            mv "\$fname" "\$folder/\$new_name"
         done
         if [[ -f "\$folder/sorted.tsv.gz" ]]; then
             # the fragments file needs to be renamed
@@ -59,8 +60,10 @@ process IGVF_UPLOAD {
     }
 
     # find pseudobulk IDs by search for QC files and restore each one
-    find -L pseudobulks -type f -name "*.per_cell_qc.tsv.gz" \
-    | while read -r qc_file; do
+    # NOTE: list the QC files before moving anything. Streaming find into the loop races with the
+    # moves: find can stat a file that was already moved and exit 1, failing the task via pipefail.
+    mapfile -t qc_files < <(find -L pseudobulks -maxdepth 1 -name '*.per_cell_qc.tsv.gz' -type f)
+    for qc_file in "\${qc_files[@]}"; do
         pseudobulk_id=\$(basename "\$qc_file" .per_cell_qc.tsv.gz)
         restore_pseudobulk_dir "\$pseudobulk_id"
     done
@@ -77,7 +80,7 @@ process IGVF_UPLOAD {
         --input-file-sets "${principal_analysis}" \
         --metadata-file "${metadata_file}" \
         --annotations-tsv "${cell_name_to_annotation_mapping}" \
-        ${dry_run ? "--dry-run" : ""} \
+        ${dry_run ? "--dry-run" : "--no-dry-run"} \
         --igvf-mode "${igvf_mode}"
 
     1>&2 echo "Running upload script:"

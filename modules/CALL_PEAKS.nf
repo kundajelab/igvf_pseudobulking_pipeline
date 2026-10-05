@@ -5,22 +5,6 @@ process CALL_PEAKS {
     memory '8 GB'
     conda "environments/CALL_PEAKS.yaml"
     container "${dotenv('CALL_PEAKS_IMAGE')}"
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${raw_insertions_bigwig}",
-        saveAs: { _fileName -> "raw_insertions.bw" },
-        mode: params.publish_mode
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${filtered_overlap_calls}",
-        saveAs: { _fileName -> "peaks.narrowPeak.gz" },
-        mode: params.publish_mode
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${filtered_overlap_bigbed}",
-        saveAs: { _fileName -> "peaks.narrowPeak.bb" },
-        mode: params.publish_mode
-    publishDir "${params.workspace}/${params.principal_analysis.replace(",", "-")}/output/pseudobulks/${pseudobulk_id}",
-        pattern: "${pvalue_bigwig}",
-        saveAs: { _fileName -> "peaks_minuslog10pval.bw" },
-        mode: params.publish_mode
 
     input:
         tuple val(pseudobulk_id),
@@ -47,6 +31,7 @@ process CALL_PEAKS {
 
     script:
     base = pseudobulk_id
+    rep_t_rep_1_overlap = "${base}.peaks_overlap_t_1.narrowPeak"
     overlap_output = "${base}.peaks_overlap_unfiltered.narrowPeak"
     filtered_overlap_calls = "${base}.peaks.narrowPeak.gz"
     filtered_overlap_bigbed = "${base}.peaks.narrowPeak.bb"
@@ -56,9 +41,11 @@ process CALL_PEAKS {
     raw_insertions_ppois = "${base}.raw_insertions.bdg"
     raw_insertions_bigwig = "${base}.raw_insertions.bw"
     fragments_per_cell = "${base}.fragments_per_cell.tsv"
-    fragments_in_peaks = "${base}.fragments_in_peaks.tsv"
     fragments_in_peaks_per_cell = "${base}.fragments_in_peaks_per_cell.tsv"
     frip_per_cell = "${base}.frip_per_cell.tsv"
+    // Cap sort's buffer at half the task's memory, leaving room for the rest of the pipeline. By
+    // default sort sizes it from the node's physical memory, which can exceed the job's limit.
+    sort_buffer_size = "${task.memory.toMega().intdiv(2)}M"
     """
     1>&2 echo "Intersecting peaks"
     bedtools intersect \
@@ -69,9 +56,12 @@ process CALL_PEAKS {
         -f "${params.min_overlap}" \
         -F "${params.min_overlap}" \
         -e -sorted \
-    | bedtools intersect \
+    > "${rep_t_rep_1_overlap}"
+    # NOTE: don't pipe into the second intersect: with -sorted, bedtools stops reading -a once -b is
+    # exhausted, so the first intersect can be killed by SIGPIPE (exit 141) while still writing.
+    bedtools intersect \
         -u \
-        -a stdin \
+        -a "${rep_t_rep_1_overlap}" \
         -b "${rep_2_top_peak_calls}" \
         -g "${chrom_sizes}" \
         -f "${params.min_overlap}" \
@@ -86,12 +76,13 @@ process CALL_PEAKS {
     #    software will error in that case. Use awk to cap score.
     # 2) MACS3 can extend intervals past the end of a genomic interval, which can cause
     #    bedToBigBed and the IGVF Portal to error, so cap END at the maximum genome coordinate
-    awk \
+    bedtools intersect -v -a "${overlap_output}" -b "${blacklist}" \
+    | awk \
         -F '\\t' \
         -v OFS='\\t' \
         '
         FNR==1 { ++file_num }
-        file_num == 1 { max_end[\$1]=\$2 - 1 }
+        file_num == 1 { max_end[\$1]=\$2 }
         file_num == 2 {
             if(\$5 > 1000) { \$5 = 1000 }
             if(\$3 > max_end[\$1]) { \$3 = max_end[\$1] }
@@ -99,8 +90,7 @@ process CALL_PEAKS {
         }
         '\
         "${chrom_sizes}" \
-        <(bedtools intersect -v -a "${overlap_output}" -b "${blacklist}") \
-     \
+        - \
     | bgzip -@ ${task.cpus} -o "${filtered_overlap_calls}"
 
     # make bigbed version of filtered peaks
@@ -119,7 +109,7 @@ process CALL_PEAKS {
 
     1>&2 echo "Sorting combined ppois"
     tail -n +2 "${combined_ppois}" \
-    | sort-bed.sh "${chrom_sizes}" \
+    | sort-bed.sh --buffer-size "${sort_buffer_size}" "${chrom_sizes}" \
     > "${combined_sorted_ppois}"
 
     1>&2 echo "Converting p-value bedgraphs to bigwigs"
@@ -130,31 +120,38 @@ process CALL_PEAKS {
     bedGraphToBigWig "${raw_insertions_ppois}" "${chrom_sizes}" "${raw_insertions_bigwig}"
 
     1>&2 echo "Computing per cell FRiP"
+    # Count fragments per barcode with an awk hash rather than sorting every fragment: the number of
+    # barcodes is small, so only the per-barcode counts are sorted (to make the output repeatable).
+    function count_per_barcode {
+        awk -F '\\t' -v OFS='\\t' '
+            { ++count[\$4] }
+            END { for(barcode in count) { print barcode, count[barcode] } }
+        ' \
+        | LC_ALL=C sort -k1,1
+    }
+
     bgzip -cd "${separated_fragments}" \
-    | cut -f4 \
-    | sort \
-    | uniq -c \
-    | awk -v OFS='\\t' '{print \$2, \$1}' \
+    | count_per_barcode \
     > "${fragments_per_cell}"
 
     bedtools intersect \
         -a "${separated_fragments}" \
-        -b ${filtered_overlap_calls} \
-        -u > "${fragments_in_peaks}"
-
-    cut -f4 "${fragments_in_peaks}" \
-    | sort \
-    | uniq -c \
-    | awk -v OFS='\\t' '{print \$2, \$1}' \
+        -b "${filtered_overlap_calls}" \
+        -u \
+    | count_per_barcode \
     > "${fragments_in_peaks_per_cell}"
 
-    join \
-        -a 1 \
-        -1 1 \
-        -2 1 \
-        <(sort "${fragments_per_cell}") \
-        <(sort "${fragments_in_peaks_per_cell}") \
-    | awk -v OFS='\\t' '{if(\$3=="") \$3=0; frip=\$3/\$2; print \$1, frip}' \
+    # NOTE: test FILENAME rather than FNR==NR, because the in-peaks counts may be empty.
+    awk \
+        -F '\\t' \
+        -v OFS='\\t' \
+        -v in_peaks_file="${fragments_in_peaks_per_cell}" \
+        '
+        FILENAME == in_peaks_file { in_peaks[\$1] = \$2; next }
+        { print \$1, (\$1 in in_peaks ? in_peaks[\$1] : 0) / \$2 }
+        ' \
+        "${fragments_in_peaks_per_cell}" \
+        "${fragments_per_cell}" \
     > "${frip_per_cell}"
     """
 }

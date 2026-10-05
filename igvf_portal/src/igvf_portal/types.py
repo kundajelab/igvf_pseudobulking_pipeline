@@ -1,6 +1,5 @@
 import dataclasses
-from collections.abc import Mapping
-from typing import Literal, NewType, NotRequired, Protocol, TypedDict, cast
+from typing import Literal, NewType, NotRequired, TypedDict, cast
 
 PseudobulkId = NewType("PseudobulkId", str)
 
@@ -35,6 +34,8 @@ class AnnotationRow(TypedDict):
 
 
 class UploadRow(TypedDict):
+    """Class with fields of a row in a Portal upload config TSV."""
+
     aliases: str
     award: PortalId
     lab: PortalId
@@ -43,6 +44,7 @@ class UploadRow(TypedDict):
     file_set_type: NotRequired[str]
     file_size: NotRequired[int]
     file_format: NotRequired[str]
+    file_format_type: NotRequired[str]
     content_type: NotRequired[str]
     merged: NotRequired[bool]
     md5sum: NotRequired[str]
@@ -60,6 +62,7 @@ class UploadRow(TypedDict):
     input_file_sets: NotRequired[str]
     documents: NotRequired[str]
     normalized: NotRequired[bool]
+    controlled_access: NotRequired[bool]
 
 
 IgvfRecord = TypedDict(
@@ -69,30 +72,38 @@ IgvfRecord = TypedDict(
         "@type": list[str],
         "accession": AccessionId,
         "aliases": list[Alias],
-        "input_for": NotRequired[list[AccessionId]],
+        "input_for": NotRequired[list[PortalId]],
         "input_file_sets": list["IgvfRecord"],
         "file_set": NotRequired["IgvfRecord"],
         "file_set_type": NotRequired["str"],
         "files": list["IgvfRecord"],
         "content_type": str,
+        "file_format": NotRequired["str"],
+        "file_format_type": NotRequired["str"],
         "controlled_access": NotRequired[bool],
-        "s3_uri": str,
+        "lab": NotRequired["IgvfRecord"],
+        "s3_uri": NotRequired[str],
         "href": str,
         "submitted_file_name": str,
+        "submitted_files_timestamp": NotRequired[str],
         "status": str,
         "audit": dict[str, object],
-        "reference_files": list[PortalId],
+        "validation_error_detail": NotRequired[str],
+        "reference_files": list["IgvfRecord"] | list["PortalId"],
         "assembly": str,
         "term_name": NotRequired[str],
         "md5sum": NotRequired[str],
+        "preferred_assay_titles": NotRequired[list[str]],
         "summary": NotRequired[str],
+        "uniform_pipeline_status": NotRequired[str],
+        "upload_status": NotRequired[str],
     },
 )
 
 
 @dataclasses.dataclass(slots=True, frozen=True, kw_only=True)
 class AnnotationAccessions:
-    """Class for holding input accession IDs"""
+    """Class for holding input accession IDs."""
 
     analysis_set_accession: AccessionId
     cell_name: CellType
@@ -102,25 +113,22 @@ class AnnotationAccessions:
 
     @classmethod
     def from_csv_row(cls, row: dict[str, str]) -> AnnotationAccessions:
-        analysis_set_accession = row.get("analysis_set_accession", None)
+        """Build from a CSV row, raising ValueError if a required column is missing."""
+        analysis_set_accession = row.get("analysis_set_accession")
         if analysis_set_accession is None:
             raise ValueError("Must specify analysis_set_accession")
-        cell_name = row.get("cell_name", None)
+        cell_name = row.get("cell_name")
         if cell_name is None:
             raise ValueError("Must specify cell_name")
-        subsample = row.get("subsample", None)
+        subsample = row.get("subsample")
         if subsample is None:
             raise ValueError("Must specify subsample")
         return AnnotationAccessions(
             analysis_set_accession=AccessionId(analysis_set_accession),
             cell_name=CellType(cell_name),
             subsample=SampleId(subsample),
-            matrix_file_accession=cast(
-                AccessionId | None, row.get("matrix_file_accession", None)
-            ),
-            fragments_file_accession=cast(
-                AccessionId | None, row.get("fragments_file_accession", None)
-            ),
+            matrix_file_accession=cast(AccessionId | None, row.get("matrix_file_accession")),
+            fragments_file_accession=cast(AccessionId | None, row.get("fragments_file_accession")),
         )
 
 
@@ -139,6 +147,8 @@ PseudobulkTrackerRow = TypedDict(
 
 
 class GeneInfoRow(TypedDict):
+    """Class with fields of a row in a gene info table."""
+
     gene_id: str
     gene_name: str
     mt: bool
@@ -146,6 +156,8 @@ class GeneInfoRow(TypedDict):
 
 
 class TssRow(TypedDict):
+    """Class with fields of a row in a transcription start site (TSS) table."""
+
     gene: str
     transcript: str
     chro: str
@@ -153,8 +165,7 @@ class TssRow(TypedDict):
     strand: Literal["+", "-"]
 
 
-class HasAnnotations(Protocol):
-    __annotations__: Mapping[str, object]
+class RecordNotFound(ValueError):  # noqa: N818 - public name used by callers
+    """Subclass of ValueError for specific checks that a record was not found."""
 
-
-class FromTypedDict(Mapping, HasAnnotations): ...
+    pass

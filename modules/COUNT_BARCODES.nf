@@ -14,17 +14,25 @@ process COUNT_UNIQUE_BARCODES {
 
     script:
     // The metadata file may or may not be compressed, and bgzip exits non-zero on plain input
-    // ("not a compressed file -- ignored") rather than passing it through.
-    metadata_reader = metadata_file.name.endsWith('.gz')
-        ? "bgzip -cd -@ ${task.cpus} \"${metadata_file}\""
-        : "cat \"${metadata_file}\""
+    // ("not a compressed file -- ignored") rather than passing it through. awk cannot read it
+    // compressed, so decompress it to a file first.
+    // NOTE: neither input is read through a process substitution: bash ignores the exit status of
+    // those, so a reader that died part-way would silently truncate its input. The metadata goes
+    // through a file and the fragments through a pipe, where pipefail catches a failure.
+    metadata_is_compressed = metadata_file.name.endsWith('.gz')
+    metadata_tsv = metadata_is_compressed ? "decompressed_metadata.tsv" : "${metadata_file}"
+    decompress_metadata = metadata_is_compressed
+        ? "bgzip -cd -@ ${task.cpus} \"${metadata_file}\" > \"${metadata_tsv}\""
+        : ""
     // NOTE: FS must be set to tab. Metadata columns such as cell_description hold values containing
     // spaces, and with the default separator those would be split into several fields, shifting
     // every column after them.
     // NOTE: num_codes and num_fragments are initialised so that a fragments file with no records
     // prints "0\t0" rather than empty fields, which could not be converted to integers.
     """
-    awk \
+    ${decompress_metadata}
+    bgzip -cd -@ ${task.cpus} "${fragments}" \
+    | awk \
         '
         BEGIN {FS="\\t"; num_codes=0; num_fragments=0}
         # the first file is the metadata: note which barcodes are kept for pseudobulking
@@ -52,8 +60,8 @@ process COUNT_UNIQUE_BARCODES {
             print num_codes "\\t" num_fragments
         }
         ' \
-        <(${metadata_reader}) \
-        <(bgzip -cd -@ ${task.cpus} "${fragments}")
+        "${metadata_tsv}" \
+        -
     """
 }
 

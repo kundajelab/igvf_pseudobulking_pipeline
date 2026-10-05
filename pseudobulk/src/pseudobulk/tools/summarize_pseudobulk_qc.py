@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
@@ -28,23 +29,32 @@ def _load_and_subset_atac_qc(
     """Load ATAC QC and subset to the specified pseudobulk."""
     pseudobulk_id = metadata_pseudobulk_df["pseudobulk_id"].iloc[0]
 
-    def _row_filter(df: pd.DataFrame) -> pd.Series[bool]:
+    def _row_filter(df: pd.DataFrame) -> pd.Series:
         return df["pseudobulk_id"] == pseudobulk_id
 
+    # only read the QC of the analysis sets the pseudobulk has cells in: split-fragments assigns
+    # pseudobulk IDs from the metadata of each analysis set, so no other has rows for it
+    accessions = {
+        f"{accession}" for accession in metadata_pseudobulk_df["analysis_set_accession"].unique()
+    }
     pseudobulk_atac_qc, pseudobulk_tss_matrix = utils.load_atac_qc(
-        atac_qc_dir=atac_qc_dir, need_tss=True, logger=logger, row_filter=_row_filter
+        atac_qc_dir=atac_qc_dir,
+        need_tss=True,
+        logger=logger,
+        row_filter=_row_filter,
+        accessions=accessions,
     )
-    subsample = metadata_pseudobulk_df["subsample"].iloc[0]
-    pseudobulk_atac_qc["subsample"] = subsample
     return pseudobulk_atac_qc, pseudobulk_tss_matrix
 
 
 def _compute_pseudobulk_combined_qc(
     pseudobulk: PseudobulkName,
     pseudobulk_atac_qc: pd.DataFrame,
+    subsample: str,
     rna_qc: Path | None,
     frip_per_cell: Path | None,
     failure_handler: FailureHandler,
+    raise_on_empty: bool,
     logger: logging.Logger,
 ) -> pd.DataFrame:
     logger.info(f"Computing pseudobulk_combined_qc for {pseudobulk}")
@@ -56,7 +66,7 @@ def _compute_pseudobulk_combined_qc(
     )
     # copy pseudobulk_atac_qc so that changes aren't propagated to the caller
     pseudobulk_atac_qc = pseudobulk_atac_qc.copy(deep=True)
-    # NOTE: remove raw columns thatare only used for pseudobulk-lvl QC
+    # NOTE: remove raw columns that are only used for pseudobulk-lvl QC
     pseudobulk_atac_qc = pseudobulk_atac_qc.loc[
         :, [x for x in pseudobulk_atac_qc.columns if not x.startswith("raw-")]
     ]
@@ -75,8 +85,11 @@ def _compute_pseudobulk_combined_qc(
         identifier=pseudobulk,
         rna_qc=pseudobulk_rna_qc,
         atac_qc=pseudobulk_atac_qc,
+        raise_on_empty=raise_on_empty,
         logger=logger,
     )
+    # take subsample from the metadata after merging, so that cells without ATAC QC have it too
+    pseudobulk_combined_qc["subsample"] = subsample
 
     # Confirm that ATAC and RNA cells match
     if (
@@ -130,7 +143,7 @@ def _compute_pseudobulk_qc_summary(
     pseudobulk_qc_summary["num_cells"] = pseudobulk_combined_qc.shape[0]
 
     def _sum(series: pd.Series) -> np.uint64:
-        """Sum integers avoiding round-off"""
+        """Sum integers avoiding round-off."""
         return series.values.sum(dtype=np.uint64)
 
     # RNA
@@ -153,25 +166,32 @@ def _compute_pseudobulk_qc_summary(
         ) * 100.0
     # ATAC
     pseudobulk_qc_summary["num_frags"] = _sum(pseudobulk_atac_qc["num_frags"])
-    pseudobulk_qc_summary["pct_duplicated_reads"] = (
-        _sum(pseudobulk_atac_qc["raw-num_dup_reads"]) / _sum(pseudobulk_atac_qc["raw-num_reads"])
-    ) * 100.0
-    pseudobulk_qc_summary["nucleosomal_signal"] = (
-        1 + _sum(pseudobulk_atac_qc["raw-mono_nucleosomal_frags"])
-    ) / (1 + _sum(pseudobulk_atac_qc["raw-nucleosome_free_frags"]))
-    # ATAC - TSS enrichment
-    TSS_half_window = 2000
-    TSS_half_smooth_window = 5
-    pseudobulk_tss_insertions = pseudobulk_tss_matrix.sum(axis=0, dtype=np.uint64)
-    tss_insertions_flank_mean = (
-        pseudobulk_tss_insertions[:100].sum() + pseudobulk_tss_insertions[-100:].sum()
-    ) / 200
-    tss_insertions_center = pseudobulk_tss_insertions[
-        TSS_half_window - TSS_half_smooth_window : TSS_half_window + TSS_half_smooth_window + 1
-    ].mean()
-    pseudobulk_qc_summary["tss_enrichment"] = tss_insertions_center / (
-        tss_insertions_flank_mean + 0.1
-    )  # add 0.1 like snapatac2 to avoid division by zero
+    if len(pseudobulk_atac_qc) == 0:
+        # there are no fragments, so the ratios of fragment counts are undefined
+        pseudobulk_qc_summary["pct_duplicated_reads"] = float("nan")
+        pseudobulk_qc_summary["nucleosomal_signal"] = float("nan")
+        pseudobulk_qc_summary["tss_enrichment"] = float("nan")
+    else:
+        pseudobulk_qc_summary["pct_duplicated_reads"] = (
+            _sum(pseudobulk_atac_qc["raw-num_dup_reads"])
+            / _sum(pseudobulk_atac_qc["raw-num_reads"])
+        ) * 100.0
+        pseudobulk_qc_summary["nucleosomal_signal"] = (
+            1 + _sum(pseudobulk_atac_qc["raw-mono_nucleosomal_frags"])
+        ) / (1 + _sum(pseudobulk_atac_qc["raw-nucleosome_free_frags"]))
+        # ATAC - TSS enrichment
+        tss_half_window = 2000
+        tss_half_smooth_window = 5
+        pseudobulk_tss_insertions = pseudobulk_tss_matrix.sum(axis=0, dtype=np.uint64)
+        tss_insertions_flank_mean = (
+            pseudobulk_tss_insertions[:100].sum() + pseudobulk_tss_insertions[-100:].sum()
+        ) / 200
+        tss_insertions_center = pseudobulk_tss_insertions[
+            tss_half_window - tss_half_smooth_window : tss_half_window + tss_half_smooth_window + 1
+        ].mean()
+        pseudobulk_qc_summary["tss_enrichment"] = tss_insertions_center / (
+            tss_insertions_flank_mean + 0.1
+        )  # add 0.1 like snapatac2 to avoid division by zero
     # ATAC - FRIP
     if (
         fragments_per_cell is None
@@ -213,7 +233,8 @@ def summarize_pseudobulk_qc(
     frip_per_cell: Path | None = None,
     fragments_per_cell: Path | None = None,
     fragments_in_peaks_per_cell: Path | None = None,
-    failure_actions: list[FailureAction] = [FailureAction.warning, FailureAction.sentinal],
+    failure_actions: Iterable[FailureAction] = (FailureAction.warning, FailureAction.sentinal),
+    raise_on_empty: bool = True,
 ) -> None:
     """Summarize ATAC and RNA QC for the specified pseudobulk.
 
@@ -225,15 +246,20 @@ def summarize_pseudobulk_qc(
         pseudobulk: ID of the pseudobulk to process
         metadata_loc: Path to metadata file. The file should be a tab-separated values (TSV) file
             with columns "analysis_set_accession", "barcode_sample", "subsample", and "cell_name"
-        atac_qc_dir: Path to folder with ATAC QC TSVs and .npy files with Transcription Start Sites,
+        atac_qc_dir: Path to folder with ATAC QC TSVs and .npz files with Transcription Start Sites,
             produced by the split-fragments tool.
+        pseudobulk_qc_out: Path to write pseudobulk_combined_qc, the per-cell QC of the pseudobulk,
+            to.
+        qc_summary_out: Path to write pseudobulk_qc_summary, the one-row QC summary of the
+            pseudobulk, to.
         rna_qc: Path to RNA QC TSV produced by pseudobulk-rna tool.
         pseudobulk_counts: Path to RNA counts TSV produced by pseudobulk-rna tool.
         frip_per_cell: Path to TXT file produced by CALL_PEAKS module.
         fragments_per_cell: Path to TXT file produced by CALL_PEAKS module.
         fragments_in_peaks_per_cell: Path to TXT file produced by CALL_PEAKS module.
-        output_dir: Path,
         failure_actions: List of potential actions to take if data integrity checks fail.
+        raise_on_empty: If True, raise exception if pseudobulk has neither RNA-seq or ATAC-seq. If
+            False, warn and return an empty object.
     """
     logger = logging.getLogger(name=f"{__package__} aggregate-pseudobulk-qc")
     failure_handler = FailureHandler(
@@ -250,12 +276,15 @@ def summarize_pseudobulk_qc(
         metadata_pseudobulk_df=metadata_pseudobulk_df,
         logger=logger,
     )
+    first_metadata: pd.Series = metadata_pseudobulk_df.iloc[0]
     pseudobulk_combined_qc = _compute_pseudobulk_combined_qc(
         pseudobulk=pseudobulk,
         pseudobulk_atac_qc=pseudobulk_atac_qc,
+        subsample=first_metadata["subsample"],
         rna_qc=rna_qc,
         frip_per_cell=frip_per_cell,
         failure_handler=failure_handler,
+        raise_on_empty=raise_on_empty,
         logger=logger,
     )
     pseudobulk_combined_qc.to_csv(
@@ -265,7 +294,6 @@ def summarize_pseudobulk_qc(
         compression=utils.COMPRESSION_DICT,
     )
 
-    first_metadata: pd.Series = metadata_pseudobulk_df.iloc[0]
     pseudobulk_qc_summary = _compute_pseudobulk_qc_summary(
         pseudobulk=pseudobulk,
         pseudobulk_atac_qc=pseudobulk_atac_qc,

@@ -17,9 +17,9 @@
     },
     "igvf_mode": {
       "type": "string",
-      "description": "IGVF mode for upload. Can be 'prod', 'staging', or 'sandbox'.",
+      "description": "IGVF mode for upload. Can be 'prod' or 'staging'.",
       "default": "prod",
-      "enum": ["prod", "staging", "sandbox"]
+      "enum": ["prod", "staging"]
     },
     "igvf_dry_run": {
       "type": "boolean",
@@ -85,6 +85,12 @@
       "type": "boolean",
       "default": null,
       "description": "Whether to split fragments files in parallel. If null, will default to false for local execution and true for cluster execution, since it will typically be faster to run in parallel on the cluster with less IO contention, but slower locally with more contention."
+    },
+    "summarize_pseudobulk_qc_batch_size": {
+      "type": "integer",
+      "default": 16,
+      "minimum": 1,
+      "description": "How many pseudobulks each SUMMARIZE_PSEUDOBULK_QC task summarizes, one after another."
     },
     "slurm_queue": {
       "type": "string",

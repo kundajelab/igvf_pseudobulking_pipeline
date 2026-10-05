@@ -34,6 +34,7 @@ def _load_and_combine_accession_qc(
     atac_qc_dir: Path,
     rna_qc_dir: Path,
     output_dir: Path,
+    raise_on_empty: bool,
 ) -> None:
     """Load and combine ATAC and RNA QC for a given accession.
 
@@ -42,6 +43,8 @@ def _load_and_combine_accession_qc(
         atac_qc_dir: Path to folder with ATAC QC TSVs.
         rna_qc_dir: Path to folder with RNA QC TSV.
         output_dir: Path to folder to write the combined per-accession QC TSV to.
+        raise_on_empty: If True, raise exception if accession has neither RNA-seq or ATAC-seq. If
+            False, warn and return an empty object.
     """
     logger = logging.getLogger(name=_LOGGER_NAME)
     log_lock = _WORKER_LOG_LOCK["log_lock"]
@@ -70,10 +73,15 @@ def _load_and_combine_accession_qc(
         with log_lock:
             logger.info(f"Got RNA QC for {accession} with shape {rna_qc.shape}")
     else:
-        rna_qc = pd.DataFrame([], columns=pd.Index(utils.RNA_QC_COLUMNS + ("found_in_rna",)))
+        rna_qc = pd.DataFrame([], columns=pd.Index((*utils.RNA_QC_COLUMNS, "found_in_rna")))
     # Combine QC and write out
     combined_qc = utils.merge_rna_and_atac_qc(
-        identifier=accession, atac_qc=atac_qc, rna_qc=rna_qc, logger=logger, log_lock=log_lock
+        identifier=accession,
+        atac_qc=atac_qc,
+        rna_qc=rna_qc,
+        logger=logger,
+        log_lock=log_lock,
+        raise_on_empty=raise_on_empty,
     )
     with log_lock:
         logger.info(combined_qc["num_frags"].dtype)
@@ -93,15 +101,18 @@ def combine_accession_qc(
     rna_qc_dir: Path,
     output_dir: Path,
     num_workers: int = -1,
-):
+    raise_on_empty: bool = True,
+) -> None:
     """Combine ATAC and RNA QC for each accession.
 
     Args:
-        metadata_loc: Input annotations metadata file path
+        metadata_loc: Input annotations metadata file path.
         atac_qc_dir: Path to folder with ATAC QC TSVs.
         rna_qc_dir: Path to folder with RNA QC TSV.
         output_dir: Path to folder to write per-accession combined QC TSVs.
         num_workers: Number of parallel workers to use. If <=0, use all available cores.
+        raise_on_empty: If True, raise exception if accession has neither RNA-seq or ATAC-seq. If
+            False, warn and return an empty object.
     """
     logger = logging.getLogger(name=_LOGGER_NAME)
     num_workers = num_workers if num_workers > 0 else cpu_count()
@@ -113,12 +124,12 @@ def combine_accession_qc(
     # note the OOM kill count now, so that a worker that is killed later can be identified as having
     # run out of memory
     oom_kills_before = utils.oom_kill_count()
-    try:
-        with ProcessPoolExecutor(
-            max_workers=num_workers,
-            initializer=_init_worker,
-            initargs=(Lock(), logger.getEffectiveLevel()),
-        ) as executor:
+    with ProcessPoolExecutor(
+        max_workers=num_workers,
+        initializer=_init_worker,
+        initargs=(Lock(), logger.getEffectiveLevel()),
+    ) as executor:
+        try:
             # Combine QC per analysis accession
             futures = [
                 executor.submit(
@@ -127,11 +138,12 @@ def combine_accession_qc(
                     atac_qc_dir=atac_qc_dir,
                     rna_qc_dir=rna_qc_dir,
                     output_dir=output_dir,
+                    raise_on_empty=raise_on_empty,
                 )
                 for accession in metadata_df["analysis_set_accession"].unique().tolist()
             ]
             for future in as_completed(futures):
                 future.result()  # Raise any exceptions that occurred in the worker processes
-    except BrokenProcessPool:
-        utils.exit_if_oom_killed(executor, oom_kills_before, logger)
-        raise
+        except BrokenProcessPool:
+            utils.exit_if_oom_killed(executor, oom_kills_before, logger)
+            raise

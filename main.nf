@@ -16,7 +16,8 @@ include { MACS3 as MACS3_REP_2 } from './modules/MACS3.nf'
 include { MACS3 as MACS3_REP_T } from './modules/MACS3.nf'
 include { CALL_PEAKS } from './modules/CALL_PEAKS.nf'
 include { PSEUDOBULK_RNA } from './modules/PSEUDOBULK_RNA.nf'
-include { SUMMARIZE_PSEUDOBULK_QC } from './modules/SUMMARIZE_PSEUDOBULK_QC.nf'
+include { ANNOTATION_MAPPING } from './modules/ANNOTATION_MAPPING.nf'
+include { SUMMARIZE_PSEUDOBULK_QC ; batchPseudobulkQcInputs } from './modules/SUMMARIZE_PSEUDOBULK_QC.nf'
 include { COMBINE_ACCESSION_QC } from './modules/COMBINE_ACCESSION_QC.nf'
 include { COLLECT_PSEUDOBULK_QC } from './modules/COLLECT_PSEUDOBULK_QC.nf'
 include { WRITE_SUMMARY } from './modules/WRITE_SUMMARY.nf'
@@ -142,9 +143,9 @@ workflow {
     // whole accession list as a single item. It has to see all of them at once: get-species raises
     // "Found multiple species" when the accessions disagree, which is the check that stops a run
     // that mixes human and mouse data, and that check only works on the complete list.
-    // NOTE: .first() turns the process output into a value channel. Without it the reference files
-    // below are queue channels holding one item each, which the first process to read them would
-    // consume, leaving every other process waiting forever.
+    // NOTE: species has to be a value channel, or the reference files below would be queue channels
+    // holding one item each, which the first process to read them would consume, leaving every other
+    // process waiting forever. Every input to DETERMINE_SPECIES is a value, so its output is too.
     if (params.species) {
         species = channel.value(params.species)
     } else {
@@ -186,6 +187,10 @@ workflow {
     // Aggregate rna data by pseudobulk
     PSEUDOBULK_RNA(DOWNLOAD_ACCESSION_FILES.out.counts_matrix_files.collect(sort: true), metadata_file, gene_info)
 
+    // Map cell names to annotations for the upload. This only needs the metadata, so it is made
+    // even when there is no RNA data and PSEUDOBULK_RNA never runs.
+    ANNOTATION_MAPPING(metadata_file)
+
     // Concat and sort fragments files
     // NOTE: do not need to sort pseudoreps 1 AND 2 since they are only used for peak calling and
     // macs3 can handle unsorted input. However sorting is very fast and produces consistent order,
@@ -196,14 +201,14 @@ workflow {
     SORT_PSEUDOREP_T(groupById(SPLIT_FRAGMENTS.out.pseudorep_t), chrom_sizes, fragments_auto_sql, false)
 
     // Use MACS to call peaks for pseudoreps
-    MACS3_REP_1(SORT_PSEUDOREP_1.out.sorted_fragments_tsv, chrom_sizes, "1")
-    MACS3_REP_2(SORT_PSEUDOREP_2.out.sorted_fragments_tsv, chrom_sizes, "2")
-    MACS3_REP_T(SORT_PSEUDOREP_T.out.sorted_fragments_tsv, chrom_sizes, "t")
+    MACS3_REP_1(SORT_PSEUDOREP_1.out.sorted_fragments_tsv, chrom_sizes, species, "1")
+    MACS3_REP_2(SORT_PSEUDOREP_2.out.sorted_fragments_tsv, chrom_sizes, species, "2")
+    MACS3_REP_T(SORT_PSEUDOREP_T.out.sorted_fragments_tsv, chrom_sizes, species, "t")
 
     // Group data back together for calling peaks, this channel will yield a series of tuples (one
-    // for each accession x pseudobulk combo) of the form:
-    // (accession_id, pseudobulk_id, sorted_fragments, rep_1_peaks, rep_1_ppois, rep_2_peaks,
-    //  rep_2_ppois, rep_t_peaks, rep_t_ppois)
+    // for each pseudobulk) of the form:
+    // (pseudobulk_id, sorted_fragments, rep_1_peaks, rep_1_ppois, rep_2_peaks, rep_2_ppois,
+    //  rep_t_peaks, rep_t_ppois)
     peaks_in_ch = SORT_SEPARATED_FRAGMENTS.out.sorted_fragments_tsv
         .join(MACS3_REP_1.out.output, by: 0)
         .join(MACS3_REP_2.out.output, by: 0)
@@ -236,9 +241,14 @@ workflow {
     // hence SPLIT_FRAGMENTS never ran) SUMMARIZE_PSEUDOBULK_QC would never be called. Use ifEmpty to
     // supply an empty list in that case, so the RNA-only QC is still summarized.
     atac_qc_files = SPLIT_FRAGMENTS.out.atac_qc_files.collect(sort: true, flat: true).ifEmpty([])
-    SUMMARIZE_PSEUDOBULK_QC(summarize_qc_in_ch, atac_qc_files, metadata_file)
+
+    SUMMARIZE_PSEUDOBULK_QC(
+        batchPseudobulkQcInputs(summarize_qc_in_ch, params.summarize_pseudobulk_qc_batch_size),
+        atac_qc_files,
+        metadata_file
+    )
     // concatenate all the per-pseudobulk summary QCs and publish, keeping only the first header
-    COLLECT_PSEUDOBULK_QC(SUMMARIZE_PSEUDOBULK_QC.out.qc_summary_out.collect())
+    COLLECT_PSEUDOBULK_QC(SUMMARIZE_PSEUDOBULK_QC.out.qc_summary_out.collect(sort: true))
 
     // create combined QC per accession
     rna_qc_files = PSEUDOBULK_RNA.out.all_cell_rna_qc_reports.collect(sort: true, flat: true).ifEmpty([])
@@ -260,25 +270,22 @@ workflow {
         .collect(sort: true)
         .ifEmpty([])
 
-    // collect some stats about the data: every accession that yielded a file of either type
-    // NOTE: frag_accessions and matrix_accessions each carry a single list, so concat emits those two
-    // lists rather than the accessions inside them, and flatten is needed to get back to individual
-    // accessions before de-duplicating. ifEmpty is needed for the same reason as above, because
-    // flatten leaves the channel empty when neither file type produced anything.
-    def accessions = frag_accessions
-        .concat(matrix_accessions)
-        .flatten()
-        .unique()
-        .collect(sort: true)
-        .ifEmpty([])
+    // collect some stats about the data: every accession that was requested, so that WRITE_SUMMARY
+    // can count the ones that yielded neither file type
+    // NOTE: downloaded files are named after the output half of an "<input>;<output>" pair (or after
+    // the accession itself when it is bare), so map to that half to match frag_accessions and
+    // matrix_accessions, which hold the simple names of the downloaded files.
+    def accessions = input_accessions.map { requested ->
+        requested.collect { accession -> accession.tokenize(';').last() }.unique().sort()
+    }
 
     WRITE_SUMMARY(
         metadata_file,
         accessions,
         frag_accessions,
         matrix_accessions,
-        COMBINE_ACCESSION_QC.out.accession_qcs.collect(),
-        SUMMARIZE_PSEUDOBULK_QC.out.pseudobulk_qc_out.collect()
+        COMBINE_ACCESSION_QC.out.accession_qcs.collect(sort: true),
+        SUMMARIZE_PSEUDOBULK_QC.out.pseudobulk_qc_out.collect(sort: true)
     )
 
     // NOTE: the ATAC-seq and RNA-seq may be missing, so be sure to handle empty lists
@@ -286,7 +293,7 @@ workflow {
     IGVF_UPLOAD(
         [params.principal_analysis, params.igvf_dry_run, params.igvf_mode],
         metadata_file,
-        PSEUDOBULK_RNA.out.cell_name_to_annotation_mapping.collect(sort: true).ifEmpty([]),
+        ANNOTATION_MAPPING.out.cell_name_to_annotation_mapping,
         PSEUDOBULK_RNA.out.pseudobulk_counts.collect(sort: true).ifEmpty([]),
         PSEUDOBULK_RNA.out.pseudobulk_h5ads.collect(sort: true).ifEmpty([]),
         SORT_SEPARATED_FRAGMENTS.out.sorted_fragments_tsv

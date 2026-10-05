@@ -8,8 +8,26 @@ set -euo pipefail
 #    alphabetically
 # 4. remove the chrom index
 
-# Usage: sort-bed.sh <genome_order> [<bed>]
+# Usage: sort-bed.sh [--buffer-size SIZE] <genome_order> [<bed>...]
 # If bed is not specified (or "-"), reads from stdin
+# --buffer-size is passed through to sort. Set it from the job's memory allocation: by default sort
+# sizes its buffer from the node's physical memory, which can exceed a job's memory limit.
+sort_args=()
+while [[ "$#" -ge 1 ]]; do
+    case "$1" in
+        "-S" | "--buffer-size")
+            sort_args+=("--buffer-size=$2")
+            shift 2
+            ;;
+        "--buffer-size="*)
+            sort_args+=("$1")
+            shift 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 genome_order=$1
 shift 1
 
@@ -43,10 +61,12 @@ function read_beds {
 # 2. then read from BED and add an initial column that is chromosome order
 # 3. sort by chromosome index, start, end, then any remaining columns
 # 4. cut away the chromosome index to yield sorted bed rows
-awk -v OFS='\t' '
+# shellcheck disable=SC2218
+read_beds "${@}" \
+| awk -v OFS='\t' '
     FNR == 1 { ++file_num }
     file_num == 1 { idx[$1] = FNR }
     file_num == 2 { print idx[$1], $0 }
-' "$genome_order" <(read_beds "${@}") \
-| sort --temporary-directory="$temp_dir" -k1,1n -k3,3n -k4,4n -k5 \
+' "$genome_order" - \
+| sort --temporary-directory="$temp_dir" ${sort_args[@]+"${sort_args[@]}"} -k1,1n -k3,3n -k4,4n -k5 \
 | cut -f2-

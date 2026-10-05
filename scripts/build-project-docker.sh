@@ -49,6 +49,7 @@ remote_tag="${registry}/${local_tag}"
 
 docker build \
     -D \
+    --provenance=false \
     --platform linux/amd64,linux/arm64 \
     --build-arg ENV_NAME="$project" \
     -t "${local_tag}" \
@@ -63,4 +64,5 @@ fi
 
 # output name for dotenv environment file
 environment_name=$(tr '[:lower:]' '[:upper:]' <<< "$project")
-echo "${environment_name}_IMAGE=${remote_tag}"
+digest=$(docker images --digests "${remote_tag}" | tail -n1 | awk '{print $3}')
+echo "${environment_name}_IMAGE=${registry}/${project}@${digest}"

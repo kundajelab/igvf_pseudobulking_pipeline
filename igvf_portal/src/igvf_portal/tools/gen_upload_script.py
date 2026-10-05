@@ -1,9 +1,10 @@
 from pathlib import Path
 
 from igvf_portal import VERSION, utils
-from igvf_portal.enums import IgvfMode
+from igvf_portal.connection import PConnection
+from igvf_portal.enums import IgvfMode, LogLevel
 from igvf_portal.gen_upload_config import GenUploadConfig
-from igvf_portal.igvf_lookup import IgvfLookup
+from igvf_portal.parallel_logger import ParallelLogger
 from igvf_portal.types import PortalId
 from igvf_portal.upload_state import UploadState
 
@@ -21,29 +22,34 @@ def gen_upload_script(
     alias_prefix: str = "anshul-kundaje",
     igvf_mode: IgvfMode = IgvfMode.prod,
     dry_run: bool = True,
-):
-    """Generate TSVs for documents, pseudobulk sets (with document links) and tabular, matrix and signal files.
+    log_level: LogLevel = LogLevel.info,
+) -> None:
+    """Generate upload TSVs and an upload script for pseudobulk pipeline results.
 
-    A bash upload script `upload.sh` is created inside basedir, and a TSVs used by the upload script are created
-    in the subfolder `upload_tsvs`.
+    TSVs are generated for documents, pseudobulk sets (with document links) and tabular, matrix and
+    signal files. A bash upload script `upload.sh` is created inside basedir, and the TSVs used by
+    the upload script are created in the subfolder `upload_tsvs`.
 
     Args:
         basedir: Path to output folder of pseudobulk pipeline
-        input_file_sets: comma-separated string of input file sets (analysis sets used to produce the pseudobulks)
-        annotations_tsv: CSV/TSV with columns "pseudobulk", "pseudobulk_id", "cell_name", "CL_id", and "cell_description"
+        input_file_sets: comma-separated string of input file sets (analysis sets used to produce
+            the pseudobulks)
         metadata_file: TSV with all annotations needed for for pseudobulks
-        outdir: Path to write output files. TSVs for upload submission will be generated in a subfolder "upload-tsvs"
+        annotations_tsv: CSV/TSV with columns "pseudobulk", "pseudobulk_id", "cell_name", "CL_id",
+            and "cell_description"
         compute_md5: If true, compute md5 hashes for file (non-document) uploads
         lab: value to use for lab in metadata
         award: value to use for award in metadata
         file_set_type: value to use for file_set_type in metadata
         alias_prefix: value to prefix new aliases with
-        reference_files: comma-separated list of reference files (e.g. alignment indices. Should not change much.)
         igvf_mode: use "staging" for testing, "prod" for actual uploads.
-        dry_run: if True, do NOT modify the IGVF portal. If False, actually upload pseudobulk results.
+        dry_run: if True, do NOT modify the IGVF portal. If False, actually upload pseudobulk
+            results.
+        log_level: Log level for output
     """
     utils.check_access_keys()
-    logger = utils.get_logger_from_file(__file__)
+    utils.fix_igvf_logging(level=log_level.value)
+    logger = ParallelLogger.new(utils.get_logger_from_file(__file__, level=log_level.value))
     logger.info(f"Version: {VERSION}")
 
     # store options and helpful info in a big GenUploadConfig object
@@ -57,7 +63,7 @@ def gen_upload_script(
         file_set_type=file_set_type,
         alias_prefix=alias_prefix,
         dry_run=dry_run,
-        igvf_lookup=IgvfLookup.new(igvf_mode=igvf_mode),
+        connection=PConnection.new(igvf_mode=igvf_mode),
         annotations_path=annotations_tsv,
         logger=logger,
     )
