@@ -18,13 +18,19 @@
 // directive". Keeping the closure at the call site also means `task` and `baseMem` resolve against
 // the task context in the usual way, with no delegate juggling.
 
+// Whether the previous attempt looks like it ran out of memory: killed with SIGKILL (137) or a
+// signal up to 140, or with SIGBUS (135), which a job can get when it touches memory the kernel
+// cannot provide under memory pressure.
+def wasOutOfMemory(task) {
+    task.exitStatus == 135 || task.exitStatus in 137..140
+}
+
 // Memory to request for this attempt: the estimate on the first try, then double it each time the
 // previous attempt looked like it ran out of memory. A previous attempt that died for some other
 // reason (preemption, say) is retried at the same size it already had.
 def oomMemoryOf(task, baseMem) {
     if (task.previousTrace) {
-        def wasOom = task.exitStatus in 137..140
-        wasOom ? 2 * task.previousTrace.memory : task.previousTrace.memory
+        wasOutOfMemory(task) ? 2 * task.previousTrace.memory : task.previousTrace.memory
     } else {
         baseMem
     }
@@ -36,7 +42,7 @@ def oomMemoryOf(task, baseMem) {
 // memory will not fix. Otherwise allow enough retries to also absorb preemptions, which only happen
 // on a cluster queue.
 def oomMaxRetriesOf(task, baseMem) {
-    def wasOom = task.exitStatus in 137..140
+    def wasOom = wasOutOfMemory(task)
     // An attempt that ran out of memory while already pinned to the executor's memory ceiling
     // cannot be helped by trying again: oomMemoryOf would double the request, resourceLimits would
     // clamp it straight back to the same ceiling, and the attempt would be identical. Give up now
