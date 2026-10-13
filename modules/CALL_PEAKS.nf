@@ -1,8 +1,10 @@
 include { dotenv } from 'plugin/nf-dotenv'
+include { oomMemoryOf ; oomMaxRetriesOf } from './retry.nf'
 
 process CALL_PEAKS {
     cpus 1
-    memory '8 GB'
+    memory { oomMemoryOf(task, baseMem) }
+    maxRetries { oomMaxRetriesOf(task, baseMem) }
     conda "environments/CALL_PEAKS.yaml"
     container "${dotenv('CALL_PEAKS_IMAGE')}"
 
@@ -10,11 +12,11 @@ process CALL_PEAKS {
         tuple val(pseudobulk_id),
             path(separated_fragments),
             path(rep_1_top_peak_calls),
-            path(rep_1_clipped_ppois),
+            path(rep_1_clipped_ppois, arity: "1"),
             path(rep_2_top_peak_calls),
-            path(rep_2_clipped_ppois),
+            path(rep_2_clipped_ppois, arity: "1"),
             path(rep_t_top_peak_calls),
-            path(rep_t_clipped_ppois)
+            path(rep_t_clipped_ppois, arity: "1")
         path(chrom_sizes)
         path(blacklist)
         path(peaks_auto_sql)
@@ -43,9 +45,17 @@ process CALL_PEAKS {
     fragments_per_cell = "${base}.fragments_per_cell.tsv"
     fragments_in_peaks_per_cell = "${base}.fragments_in_peaks_per_cell.tsv"
     frip_per_cell = "${base}.frip_per_cell.tsv"
-    // Cap sort's buffer at half the task's memory, leaving room for the rest of the pipeline. By
-    // default sort sizes it from the node's physical memory, which can exceed the job's limit.
-    sort_buffer_size = "${task.memory.toMega().intdiv(2)}M"
+    // Memory model, fitted over 196 tasks with 0.004 - 3.0 GB of clipped p-value bedGraphs: the peak
+    // is a flat 1.9 GB up to ~0.65 GB of bedGraphs, then grows at 2.6x their total size. The peak is
+    // sorting the combined bedGraph, which is 0.49x the size of the three inputs; every task with
+    // more than 3.1 GB of bedGraphs was killed at 8 GB while sorting it.
+    ppoisSize = [rep_1_clipped_ppois, rep_2_clipped_ppois, rep_t_clipped_ppois]
+        .collect { bedgraph -> bedgraph.size() }
+        .sum()
+    baseMem = 1.MB * ((2560 + 2.75 * ppoisSize / 2 ** 20) as long)
+    // Leave 1 GB for the rest of the pipeline. By default sort sizes its buffer from the node's
+    // physical memory, which can exceed the job's limit.
+    sort_buffer_size = "${Math.max(256, task.memory.toMega() - 1024)}M"
     """
     1>&2 echo "Intersecting peaks"
     bedtools intersect \
