@@ -17,7 +17,9 @@ process SORT_FRAGMENTS {
         mode: params.publish_mode
 
     input:
-        tuple val(pseudobulk_id), path(fragments_tsvs)
+        // NOTE: arity "1..*" keeps this a list even for a pseudobulk with a single fragments file.
+        // Otherwise that one file is bound as a bare path, which groovy iterates as its name parts.
+        tuple val(pseudobulk_id), path(fragments_tsvs, arity: "1..*")
         path(chrom_sizes)
         path(fragments_auto_sql)
         val(publish)
