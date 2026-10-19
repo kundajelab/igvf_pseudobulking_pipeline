@@ -12,7 +12,7 @@ from requests.adapters import HTTPAdapter
 
 from igvf_portal import connection as connection_module
 from igvf_portal import utils
-from igvf_portal.connection import PConnection, _local_accession, _query_values
+from igvf_portal.connection import PConnection, _query_values, local_accession
 from igvf_portal.enums import IgvfMode
 from igvf_portal.register_config import RegisterConfig
 from igvf_portal.tools import register
@@ -47,7 +47,7 @@ def test_inherited_methods_use_same_portal(igvf_mode: IgvfMode) -> None:
     ],
 )
 def test_local_accession(value: str, expected: str | None) -> None:
-    assert _local_accession(value) == expected
+    assert local_accession(value) == expected
 
 
 def test_query_values() -> None:

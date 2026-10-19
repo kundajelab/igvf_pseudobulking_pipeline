@@ -57,9 +57,13 @@ def _get_summary_species(summary: str) -> Literal["human", "mouse"]:
 def _get_reference_file_species(
     connection: PConnection, reference_file_ids: Iterable[PortalId]
 ) -> set[Literal["human", "mouse"]]:
-    reference_file_summaries = {
-        connection.lookup_record(reference_file_accession)["file_set"]["summary"]
+    reference_file_set_ids = {
+        connection.lookup_record(reference_file_accession, frame="object")["file_set"]
         for reference_file_accession in reference_file_ids
+    }
+    reference_file_summaries = {
+        connection.lookup_record(reference_file_set_id, frame="object")["summary"]
+        for reference_file_set_id in reference_file_set_ids
     }
     return {_get_summary_species(summary) for summary in reference_file_summaries}
 

@@ -4,7 +4,7 @@ from types import MappingProxyType
 from typing import Final, TextIO, cast
 
 from igvf_portal import utils
-from igvf_portal.connection import PConnection
+from igvf_portal.connection import PConnection, local_accession
 from igvf_portal.constants import VERSION
 from igvf_portal.enums import ContentType, IgvfMode, MultipleRecordsAction
 from igvf_portal.types import AccessionId, IgvfRecord
@@ -91,13 +91,22 @@ def _write_download_entry(
         f_out.write(f"  out={accession}.{content_type.extension}\n")
 
 
-def _get_output_accession(input_record: IgvfRecord, content_type: ContentType) -> AccessionId:
+def _get_output_accession(
+    input_record: IgvfRecord, content_type: ContentType, connection: PConnection
+) -> AccessionId:
     """Get default output accession for saved download file names."""
     match content_type:
         case ContentType.PEAKS | ContentType.GENOME_REFERENCE:
             return input_record["accession"]
         case _:
-            return input_record["file_set"]["accession"]
+            match input_record["file_set"]:
+                case str(file_set_id):
+                    return (
+                        local_accession(file_set_id)
+                        or connection.lookup_record(file_set_id, frame="object")["accession"]
+                    )
+                case _ as file_set_record:
+                    return file_set_record["accession"]
 
 
 def get_url(
@@ -192,7 +201,7 @@ def get_url(
                     )
                 if output_accession is None:
                     output_accession = _get_output_accession(
-                        input_record, content_type=content_type
+                        input_record, content_type=content_type, connection=connection
                     )
 
                 _write_download_entry(

@@ -250,7 +250,8 @@ def test_get_url_unsupported_content_type(
         get_url.get_url("IGVFFI0000QQQQ", output=tmp_path / "out.txt")
 
 
-def _reference(accession: str, summary: str) -> IgvfRecord:
+def _reference(accession: str) -> IgvfRecord:
+    """A reference file in the object frame, where its file_set is a link (the set's @id)."""
     return cast(
         IgvfRecord,
         {
@@ -260,8 +261,32 @@ def _reference(accession: str, summary: str) -> IgvfRecord:
             "aliases": [],
             "content_type": "genome reference",
             "status": "released",
-            "file_set": {"summary": summary},
+            "file_set": f"/curated-sets/{_curated_set_accession(accession)}/",
         },
+    )
+
+
+def _curated_set_accession(reference_accession: str) -> str:
+    """The accession of the (fake) curated set holding a reference file: IGVFFI... -> IGVFDS..."""
+    return f"IGVFDS{reference_accession.removeprefix('IGVFFI')}"
+
+
+def _seed_reference(connection: PConnection, accession: str, summary: str) -> None:
+    """Seed a reference file and its curated set, each in the object frame get-species uses."""
+    seed_record(connection, _reference(accession), frame="object")
+    set_accession = _curated_set_accession(accession)
+    seed_record(
+        connection,
+        cast(
+            IgvfRecord,
+            {
+                "@id": f"/curated-sets/{set_accession}/",
+                "accession": set_accession,
+                "aliases": [],
+                "summary": summary,
+            },
+        ),
+        frame="object",
     )
 
 
@@ -271,8 +296,8 @@ def test_get_species(
     connection: PConnection,
 ) -> None:
     """Species comes from the references of the analysis sets' matrix and fragments files."""
-    seed_record(connection, _reference("IGVFFI0000GGGG", "Homo sapiens GRCh38 genome"))
-    seed_record(connection, _reference("IGVFFI0000TTTT", "Homo sapiens GRCh38 transcriptome"))
+    _seed_reference(connection, "IGVFFI0000GGGG", "Homo sapiens GRCh38 genome")
+    _seed_reference(connection, "IGVFFI0000TTTT", "Homo sapiens GRCh38 transcriptome")
     matrix = _file(
         "IGVFFI0000MMMM",
         "cell by gene matrix",
@@ -317,8 +342,8 @@ def test_get_summary_species_unknown(summary: str) -> None:
 
 
 def test_get_species_mixed(monkeypatch: pytest.MonkeyPatch, connection: PConnection) -> None:
-    seed_record(connection, _reference("IGVFFI0000HHHH", "Homo sapiens GRCh38 genome"))
-    seed_record(connection, _reference("IGVFFI0000MOUS", "Mus musculus GRCm39 genome"))
+    _seed_reference(connection, "IGVFFI0000HHHH", "Homo sapiens GRCh38 genome")
+    _seed_reference(connection, "IGVFFI0000MOUS", "Mus musculus GRCm39 genome")
     seed_record(
         connection,
         _file(
@@ -403,7 +428,7 @@ def bad_beds_worker(tmp_path: Path, connection: PConnection) -> tuple[Path, PCon
     """Set up find_bad_beds' thread-local state, with a genome reference to find."""
     seed_record(
         connection,
-        _reference("IGVFFI0000GGGG", "Homo sapiens GRCh38 genome"),
+        _reference("IGVFFI0000GGGG"),
         frame="object",
     )
     find_bad_beds._THREAD_LOCAL_DATA.output = tmp_path

@@ -74,7 +74,7 @@ IgvfRecord = TypedDict(
         "aliases": list[Alias],
         "input_for": NotRequired[list[PortalId]],
         "input_file_sets": list["IgvfRecord"],
-        "file_set": NotRequired["IgvfRecord"],
+        "file_set": NotRequired["IgvfRecord" | PortalId],
         "file_set_type": NotRequired["str"],
         "files": list["IgvfRecord"],
         "content_type": str,
