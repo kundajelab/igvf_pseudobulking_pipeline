@@ -411,17 +411,36 @@ class GenUploadConfig:
                         for alias in step_aliases[file_set_alias]
                     }
                 )
-            case AnalysisStep.QC, _:
+            case AnalysisStep.QC, OutputCategory.INTERMEDIATE:
+                # this is an accession QC file,  only take the derived_from_ids that are in the
+                # input accession
+                analysis_set_accession = AccessionId(upload_path.name.split("_", 1)[0])
+                analysis_set_id = self.lookup_record(analysis_set_accession, frame="object")["@id"]
                 derived_from_ids = sorted(
                     {
-                        alias
-                        for input_aliases in (
+                        input_id
+                        for input_ids in (
                             self.input_fragments_portal_ids,
                             self.input_matrices_portal_ids,
                             annotations_id_list,
                         )
-                        if input_aliases is not None
-                        for alias in input_aliases
+                        if input_ids is not None
+                        for input_id in input_ids
+                        if self.lookup_record(input_id, frame="object")["file_set"]
+                        == analysis_set_id
+                    }
+                )
+            case AnalysisStep.QC, OutputCategory.PRINCIPAL:
+                derived_from_ids = sorted(
+                    {
+                        input_id
+                        for input_ids in (
+                            self.input_fragments_portal_ids,
+                            self.input_matrices_portal_ids,
+                            annotations_id_list,
+                        )
+                        if input_ids is not None
+                        for input_id in input_ids
                     }
                 )
             case _:

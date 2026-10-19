@@ -305,13 +305,29 @@ def _process_analysis_set(
 ) -> tuple[AnnotationsFileQc | None, frozenset[AccessionId]]:
     """Get annotations file QC and the analysis set accessions it lists for an AnalysisSet."""
     annotations_file: IgvfRecord | None = None
+    annotations_file_date_stamp: float | None = None
     # analysis sets come from search_records' object frame, where files are @ids, not records
     for file_id in cast(list[PortalId], analysis_set.get("files", [])):
-        file = connection.lookup_record(file_id, frame="object")
-        if file.get("content_type") == "cell annotations":
-            if file.get("status") != "deleted" and file.get("upload_status") != "invalidated":
-                annotations_file = file
-            break
+        record = connection.lookup_record(file_id, frame="object")
+        if (
+            record.get("content_type") == "cell annotations"
+            and record.get("status") != "deleted"
+            and record.get("upload_status") != "invalidated"
+        ):
+            record_date = record.get("creation_timestamp", None)
+            record_stamp = (
+                float("-inf")
+                if record_date is None
+                else datetime.fromisoformat(record_date).timestamp()
+            )
+            if annotations_file_date_stamp is None or annotations_file_date_stamp < record_stamp:
+                if annotations_file_date_stamp is not None:
+                    connection.logger.warning(
+                        f"Multiple cell annotations files for {analysis_set['@id']}"
+                    )
+                annotations_file = record
+                annotations_file_date_stamp = record_stamp
+
     if annotations_file is None or "accession" not in annotations_file:
         return None, frozenset()
     annotations_accession = annotations_file["accession"]

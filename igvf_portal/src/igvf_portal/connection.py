@@ -63,16 +63,16 @@ _ACCESSION = re.compile(_ACCESSION_PATTERN)
 _ACCESSIONED_PATH = re.compile(rf"(?:/[a-z-]+)?/({_ACCESSION_PATTERN})/")
 
 
-def _local_accession(value: str) -> str | None:
-    """Return the accession a value names, if it can be read off without asking the Portal.
+def local_accession(value: str) -> AccessionId | None:
+    """Return the accession from a value name, if it can be read off without asking the Portal.
 
     Handles a bare accession and a path ending in one, such as /tissues/IGVFSM0104SYAP/ or
     /IGVFSM0104SYAP/. Aliases, UUIDs, and paths of records without accessions return None.
     """
     if _ACCESSION.fullmatch(value):
-        return value
+        return AccessionId(value)
     match = _ACCESSIONED_PATH.fullmatch(value)
-    return match.group(1) if match else None
+    return AccessionId(match.group(1)) if match else None
 
 
 def _query_values(value: object) -> list[str]:
@@ -368,7 +368,7 @@ class PConnection(Connection):
         record_lookups, because lookup_record callers expect the embedded fields that frame=object
         omits.
         """
-        accession = _local_accession(value)
+        accession = local_accession(value)
         if accession is not None:
             return accession
         cached = self._ids_for_compare.get(value)
@@ -431,7 +431,7 @@ class PConnection(Connection):
                 if value_id is not None:
                     # an embedded record's @id is canonical, so reduce it locally without a lookup
                     value_id = cast(str, value_id)
-                    return _local_accession(value_id) or value_id
+                    return local_accession(value_id) or value_id
                 return value
             case str(s_value):
                 if key in lookup_props:
