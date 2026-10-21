@@ -92,12 +92,12 @@ if [[ -z "$job_name" ]]; then
 fi
 
 command_quoted=$(printf '%q ' "$@")
-mkdir -p "$log_dir"
+mkdir -p "$log_dir/$job_name"
 
 sbatch_script=$(cat << EOF
 #!/usr/bin/env bash
 #SBATCH --job-name=$job_name
-#SBATCH --output="$log_dir/%j.out"
+#SBATCH --output="$log_dir/$job_name/%j.out"
 #SBATCH --partition=$queue
 #SBATCH --time=$time_limit
 #SBATCH --cpus-per-task=$cpus
@@ -132,6 +132,6 @@ job_id=$(printf '%s\n' "$sbatch_script" | sbatch --parsable)
 cat << EOF
 submitted nextflow head process as job $job_id
    partition: $queue   walltime: $time_limit   cpus: $cpus   mem: $mem
-   log:       $log_dir/$job_id.out
+   log:       $log_dir/$job_name/$job_id.out
    status:    pixi run status --watch $job_id
 EOF

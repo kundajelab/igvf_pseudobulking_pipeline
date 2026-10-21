@@ -150,6 +150,7 @@ chmod u+x fix.sh
 pixi run --manifest-path "$repo_dir" \
     run-in-container \
     --project igvf_portal \
+    --name "igvf-reupload/$analysis_accession" \
     ${submit_args[@]+"${submit_args[@]}"} \
     --work-dir "$scratch_dir" \
     --queue "$queue" \

@@ -32,7 +32,8 @@ preferring one that is still queued or running.
 ARGS:
     -h|--help: Show this message and exit.
     -q|--queue: Queue the tasks run on, to summarize. Default: $task_queue
-    -l|--log-dir: Where the head process logs were written. Default: $log_dir
+    -l|--log-dir: Where the head process logs were written; searched, sub-folders included, for the
+      log named after the job id. Default: $log_dir
     -N|--lines: How many lines of the head process log to show. Default: $lines
     -f|--follow: Follow the log(s) after printing the summary.
     -W|--watch: Refresh the summary until the job or array finishes. For an array, newly failed or
@@ -122,13 +123,17 @@ if [[ -z "$job_id" ]]; then
     exit 1
 fi
 
-# the label in the log name is only known to the submitting script, so match on the job id
 job_name=$(sacct -j "$job_id" --format=JobName%100 -n | awk 'NR==1{$1=$1;print}')
 if [[ -z "$job_name" ]]; then
     1>&2 echo "No accounting record for job $job_id."
     exit 1
 fi
-log_folder="$log_dir/$job_name"
+
+# Find logs by the job id in their name rather than assuming where they are: the submitting scripts
+# lay them out differently under log_dir (submit-pipeline.sh in a folder named after the job,
+# submit-command.sh directly in log_dir). A job or one array task logs to <id>.out, and the tasks of
+# an array to <array id>_<task>.out.
+# NOTE: awk 'NR == 1' rather than head -n1, which can exit early and fail the pipeline via SIGPIPE.
 
 # A task id (ARRAYID_TASK) has its own log, so only a bare array id gets the array view. awk reads all
 # of sacct's output, where grep -q would exit early and fail the pipeline through SIGPIPE.
@@ -179,12 +184,15 @@ function render_queue {
     fi
 }
 
+# A false positive SC2218 from shellcheck 0.11.0: see the note above watch_array.
+# shellcheck disable=SC2218
 function render_single {
-    local log_file="$log_folder/$job_id.out"
-    [[ -f "$log_file" ]] || log_file=""
+    local log_file state
+    state=$(job_state "$job_id")
+    log_file=$(find "$log_dir" -type f -name "$job_id.out" 2> /dev/null | sort -V | awk 'NR == 1')
 
     echo "=== head process (job $job_id)"
-    if [[ -n "$(job_state "$job_id")" ]]; then
+    if [[ -n "$state" ]]; then
         squeue -j "$job_id" -o "%.12i %.26j %.10P %.9T %.11M %.11l %.5C %.7m %R"
     else
         echo "not in the queue -- final state from accounting:"
@@ -201,6 +209,9 @@ function render_single {
         echo "   (no log yet)"
     elif grep -q '^PIPELINE ' "$log_file"; then
         sed -n '/^PIPELINE /,/^====*$/{/^====*$/d; p;}' "$log_file" | sed 's/^/   /'
+    elif [[ -z "$state" ]]; then
+        # e.g. a command run by submit-command.sh, or a pipeline killed before it could print one
+        echo "   finished without a nextflow completion banner: see the accounting state above"
     else
         echo "   still running: nextflow has not printed a completion banner yet"
     fi
@@ -512,7 +523,7 @@ function collect_array {
     local task_logs=()
     while IFS= read -r task_log; do
         task_logs+=("$task_log")
-    done < <(find "$log_folder" -maxdepth 1 -name "${job_id}_*.out" 2> /dev/null | sort -V)
+    done < <(find "$log_dir" -type f -name "${job_id}_*.out" 2> /dev/null | sort -V)
     {
         sacct -j "$job_id" -X -n -P -o JobID,State,ExitCode,Elapsed | sed 's/^/S\t/'
         # Once the array has left the queue, squeue prints an error on stdout (see job_state), so
@@ -618,10 +629,12 @@ END {
 '
 
 function render_array {
-    local rows="$1"
+    local rows="$1" task_log_folder
+    task_log_folder=$(find "$log_dir" -type f -name "${job_id}_*.out" 2> /dev/null | sort -V | awk 'NR == 1 {sub(/\/[^\/]*$/, ""); print}')
+    task_log_folder="${task_log_folder:-$log_dir}"
     printf '%s\n' "$rows" \
         | awk -v job="$job_id" -v verbose="$verbose" -v max_rows="$max_rows" \
-            -v folder="$log_folder" -v script="$0" "$render_awk"
+            -v folder="$task_log_folder" -v script="$0" "$render_awk"
     echo
     render_queue
 }
@@ -727,10 +740,10 @@ if [[ "$is_array" == true ]]; then
         task_logs=()
         while IFS= read -r task_log; do
             task_logs+=("$task_log")
-        done < <(find "$log_folder" -maxdepth 1 -name "${job_id}_*.out" 2> /dev/null | sort -V)
+        done < <(find "$log_dir" -type f -name "${job_id}_*.out" 2> /dev/null | sort -V)
         if [[ ${#task_logs[@]} -gt 0 ]]; then
             echo
-            echo "=== following ${#task_logs[@]} task logs under $log_folder"
+            echo "=== following ${#task_logs[@]} task logs under ${task_logs[0]%/*}"
             tail -f ${task_logs[@]+"${task_logs[@]}"}
         fi
     fi
@@ -741,9 +754,11 @@ if [[ "$watch" == true ]]; then
     watch_single
     exit 0
 fi
+# shellcheck disable=SC2218 # false positive: see the note above watch_array
 render_single
-if [[ "$follow" == true && -f "$log_folder/$job_id.out" ]]; then
+log_file=$(find "$log_dir" -type f -name "$job_id.out" 2> /dev/null | sort -V | awk 'NR == 1')
+if [[ "$follow" == true && -n "$log_file" ]]; then
     echo
-    echo "=== following $log_folder/$job_id.out"
-    tail -f "$log_folder/$job_id.out"
+    echo "=== following $log_file"
+    tail -f "$log_file"
 fi
