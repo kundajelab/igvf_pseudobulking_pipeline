@@ -24,7 +24,8 @@ ARGS:
     -c|--cache: Where apptainer images are cached. Defaults to inferred from environment ($apptainer_cache_dir)
     -q|--queue: If specified, submit the command to run in that queue. If empty, execute normally. (empty)
     -W|--work-dir: Where to execute the command. Defaults to pwd ($work_dir)
-    -T|--time|-C|--cpus|-M|--mem|-l|--log-dir|-n|--name": Pass to submit-command.sh if queue is specified.
+    -T|--time|-C|--cpus|-M|--mem|-l|--log-dir|-n|--name: Pass to submit-command.sh if queue is specified.
+    --requeue/--no-requeue: Pass to submit-command.sh if queue is specified.
 EOF
 }
 
@@ -59,6 +60,10 @@ while [[ "$#" -ge 1 ]]; do
         "-T" | "--time" | "-C" | "--cpus" | "-M" | "--mem" | "-l" | "--log-dir" | "-n" | "--name")
             submit_args+=("$1" "$2")
             shift 2
+            ;;
+        "--requeue" | "--no-requeue")
+            submit_args+=("$1")
+            shift 1
             ;;
         "--")
             shift 1

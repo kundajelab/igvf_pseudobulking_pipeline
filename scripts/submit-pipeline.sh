@@ -164,51 +164,17 @@ run_args=(\
     "--principal-analysis" "$principal_analysis" "--mode" "$mode" "$dry_run_arg" \
     "--" "$metadata" "${@}"\
 )
-run_args_quoted=$(printf '%q ' "${run_args[@]}")
 
-job_name=igvf-pseudobulk/$principal_analysis
-log_folder="$log_dir/$job_name"
-mkdir -p "$log_folder"
-
-sbatch_script=$(cat << EOF
-#!/usr/bin/env bash
-#SBATCH --job-name=$job_name
-#SBATCH --output="$log_folder/%j.out"
-#SBATCH --partition=$partition
-#SBATCH --time=$time_limit
-#SBATCH --cpus-per-task=$cpus
-#SBATCH --mem=$mem
-#SBATCH --chdir="$repo_dir"
 # Requeueing would silently restart the pipeline from scratch, so leave restarts to a manual
 # resubmission, which resumes.
-#SBATCH --no-requeue
-# Ask for SIGINT two minutes before the walltime so nextflow can cancel its outstanding task jobs
-# rather than being SIGKILLed and leaving orphans in the queue.
-#SBATCH --signal=B:INT@120
-set -euo pipefail
-
-echo "head process: job \$SLURM_JOB_ID on \$(hostname), partition \$SLURM_JOB_PARTITION"
-
-# sbatch propagates this job's environment to the task jobs nextflow submits (process.clusterOptions
-# sets --export=ALL), which would make each task believe it is running inside this allocation and
-# inherit this job's cpu and memory limits. Drop those, but keep SLURM_CONF: the slurm commands on
-# the compute nodes need it to reach the controller.
-unset \$(env | grep -o '^SLURM_[^=]*' | grep -v '^SLURM_CONF\$' | tr '\n' ' ') || true
-
-# The log is a file rather than a terminal, so nextflow's live-redraw output would land as thousands
-# of ANSI escapes instead of readable progress lines.
-export NXF_ANSI_LOG=false
-export NXF_OPTS='-Xms512m -Xmx6g'
-
-pixi run pipeline $run_args_quoted
-EOF
-)
-
-job_id=$(printf '%s\n' "$sbatch_script" | sbatch --parsable)
-
-cat << EOF
-submitted nextflow head process as job $job_id
-   partition: $partition   walltime: $time_limit   cpus: $cpus   mem: $mem
-   log:       $log_folder/$job_id.out
-   status:    scripts/status-pipeline.sh $job_id
-EOF
+"$script_dir/submit-command.sh" \
+    --queue "$partition" \
+    --time "$time_limit" \
+    --cpus "$cpus" \
+    --mem "$mem" \
+    --log-dir "$log_dir" \
+    --name "igvf-pseudobulk/$principal_analysis" \
+    --work-dir "$repo_dir" \
+    --no-requeue \
+    -- \
+    pixi run pipeline "${run_args[@]}"
