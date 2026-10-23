@@ -37,7 +37,7 @@ status = {
 }
 clear = {
     description = "Clear all the temporary files from past pipeline runs. Run with 'all' to clear all, or specify ANALYSIS_ACCESSION.",
-    cmd = """pixi run scripts/remove-intermediates.sh"""
+    cmd = """pixi run scripts/submit-command.sh -- pixi run scripts/remove-intermediates.sh -- all"""
 }
 install-all = {
     description = "Install main project and sub-projects.",
