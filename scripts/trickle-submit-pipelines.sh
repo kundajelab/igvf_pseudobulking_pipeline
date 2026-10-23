@@ -153,6 +153,8 @@ if [[ -n "$wrong_type" ]]; then
     } 1>&2
     exit 1
 fi
+# Ensure that all the container images are updated before running: otherwise races can cause jobs to fail
+"$script_dir/run-in-container.sh" --project all
 # NOTE: blank lines are dropped, here and where each array task picks its accession, because an empty
 # metadata argument makes run-pipeline.sh fall back to the test set. awk counts a final line that has
 # no trailing newline, which wc -l would miss.
