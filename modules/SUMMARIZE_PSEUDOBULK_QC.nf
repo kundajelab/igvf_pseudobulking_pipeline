@@ -1,4 +1,38 @@
 include { dotenv } from 'plugin/nf-dotenv'
+include { oomMemoryOf ; oomMaxRetriesOf } from './retry.nf'
+
+// How much memory an ATAC QC file takes once loaded. A TSS matrix .npz is compressed, and loading it
+// expands it to the total size of the arrays inside, which the zip index records, so it is read
+// without decompressing anything. A QC table is taken at its size on disk.
+def loadedQcSize(qc_file) {
+    if (!qc_file.name.endsWith(".npz")) {
+        return qc_file.size()
+    }
+    try {
+        // NOTE: toRealPath() reaches the file behind a staged input. toFile() would give its staged
+        // name, which does not exist from where nextflow evaluates directives.
+        return new java.util.zip.ZipFile(qc_file.toRealPath().toFile()).withCloseable { zip ->
+            zip.entries().toList().sum { entry -> entry.size >= 0 ? entry.size : 4 * entry.compressedSize } ?: 0
+        }
+    } catch (IOException exception) {
+        // the largest TSS matrix measured expanded to 3.2x its size on disk
+        return 4 * qc_file.size()
+    }
+}
+
+// Starting memory for a batch. Fitted to 147 completed tasks and 39 that ran out of memory: peak RSS is
+// 0.10 GB + 0.92 x the largest single analysis set's ATAC QC (its table, plus its TSS matrix as
+// loaded) that a pseudobulk loads (R^2 0.79), since summarize-pseudobulk-qc loads one analysis set
+// at a time and keeps only the pseudobulk's cells. Pseudobulks in a batch run one after another, so
+// the largest one sets the peak. Which analysis sets a pseudobulk loads is not known here, so take
+// the largest of all of them, which every batch stages.
+def summarizeQcMemory(atac_qc_files) {
+    def largest_analysis_set_qc = atac_qc_files
+        .groupBy { qc_file -> qc_file.name.replaceAll(/(_tss_matrix\.npz|\.tsv)$/, "") }
+        .collect { _analysis_set, qc_files -> qc_files.collect { qc_file -> loadedQcSize(qc_file) }.sum() }
+        .max() ?: 0
+    return 1.MB * ((1536 + largest_analysis_set_qc / 2 ** 20) as long)
+}
 
 // Group a channel of per-pseudobulk tuples of the form
 //   (pseudobulk_id, rna_qc, pseudobulk_counts, frip_per_cell, fragments_per_cell, fragments_in_peaks_per_cell)
@@ -31,11 +65,10 @@ def batchPseudobulkQcInputs(qc_inputs_ch, batch_size) {
 // character, so "read" would collapse consecutive tabs and shift the later fields.
 process SUMMARIZE_PSEUDOBULK_QC {
     cpus 1
-    // Peak RSS measured over 609 tasks was 1.1 GB typical, 1.5 GB worst case, so 8 GB was ~5x
-    // oversubscribed and made these jobs needlessly hard to backfill on the owners queue. Grow on
-    // retry so an unusually large pseudobulk still gets through instead of failing outright.
-    // The pseudobulks in a batch are summarized sequentially, so memory does not scale with batch size.
-    memory { 2.GB * task.attempt }
+    // see summarizeQcMemory for the model, and retry.nf for growing it on retry
+    // NOTE: computed in the directive rather than the script block, so that stub runs get it too.
+    memory { oomMemoryOf(task, summarizeQcMemory(atac_qc_files)) }
+    maxRetries { oomMaxRetriesOf(task, summarizeQcMemory(atac_qc_files)) }
     // Each pseudobulk should take around one minute. On rare occasions jobs can hang due to the workdir
     // not having files updated, and since there are many of these jobs they are more likely to be
     // affected; a hang now costs a retry of the whole batch. Time cap scales with attempt so a
@@ -50,7 +83,7 @@ process SUMMARIZE_PSEUDOBULK_QC {
 
     input:
         tuple val(manifest), path(qc_inputs, name: "qc_inputs/*", arity: "0..*")
-        path("atac_qc_dir/*", arity: "0..*")
+        path(atac_qc_files, name: "atac_qc_dir/*", arity: "0..*")
         path(metadata_file)
     output:
         path "*.per_cell_qc.tsv.gz", arity: "1..*", emit: pseudobulk_qc_out
