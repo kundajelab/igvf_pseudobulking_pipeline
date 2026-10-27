@@ -35,9 +35,11 @@ process SORT_FRAGMENTS {
     output:
         tuple val(pseudobulk_id), path(sorted_fragments_tsv), emit: sorted_fragments_tsv
         path(sorted_fragments_bigbed), emit: fragments_bigbed
-        tuple val(pseudobulk_id), path(sorted_pseudorep_1), emit: pseudorep_1
-        tuple val(pseudobulk_id), path(sorted_pseudorep_2), emit: pseudorep_2
-        tuple val(pseudobulk_id), path(sorted_pseudorep_t), emit: pseudorep_t
+        tuple val(pseudobulk_id),
+            path(sorted_pseudorep_1),
+            path(sorted_pseudorep_2),
+            path(sorted_pseudorep_t),
+            emit: pseudoreps
 
     script:
     sorted_fragments_tsv = "${pseudobulk_id}.sorted.tsv.gz"

@@ -5,6 +5,10 @@ script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 repo_dir=$(dirname "$script_dir")
 
 num_simultaneous=2
+# Sherlock rejects a user's job submissions beyond this many per hour, across all of their jobs.
+# Each pipeline gets an equal share, so that running side by side they stay under it together.
+# NOTE: keep in step with params.slurm_submit_rate_limit in nextflow.config.
+max_jobs_per_hour=1500
 partition="normal"
 time_limit="1-00:00:00"
 cpus=2
@@ -28,7 +32,9 @@ the output of igvf-portal make-pseudobulk-tracker that are deemed runable (yello
 
 SUBMIT_ARGS:
     -h|--help: Show this message and exit.
-    -s|--num-simultaneous: Specify number of simultaneous pipelines to run ($num_simultaneous)
+    -s|--num-simultaneous: Specify number of simultaneous pipelines to run ($num_simultaneous). Each is
+      limited to submitting $max_jobs_per_hour/NUM_SIMULTANEOUS jobs per hour, so that together they stay
+      under the cluster's limit.
     -P|--partition: Partition to run the nextflow head processes on. Default: $partition
     -T|--time: Walltime per pipeline, which caps each whole pipeline. Default: $time_limit
     -C|--cpus: CPUs per head process. Default: $cpus
@@ -120,6 +126,10 @@ while [[ "$#" -ge 1 ]]; do
     esac
 done
 
+if [[ ! "$num_simultaneous" =~ ^[1-9][0-9]*$ ]]; then
+    1>&2 echo "--num-simultaneous must be a positive integer, not '$num_simultaneous'."
+    exit 1
+fi
 if [[ $# -lt 1 ]]; then
     1>&2 echo "metadata_id_list TSV must be supplied."
     1>&2 usage
@@ -160,7 +170,15 @@ fi
 # no trailing newline, which wc -l would miss.
 num_jobs=$(sed '/^[[:space:]]*$/d' "$metadata_id_list" | awk 'END { print NR }')
 shift 1
-nextflow_args=("${@}")
+# Split the hourly submission limit between the pipelines that run at once. This comes first, so
+# that a --slurm_submit_rate_limit given in NEXTFLOW_ARGS still takes precedence: nextflow uses the
+# last value given for a parameter.
+submit_rate_limit="$((max_jobs_per_hour / num_simultaneous))/1h"
+submit_rate_note=""
+if [[ " $* " == *" --slurm_submit_rate_limit "* ]]; then
+    submit_rate_note=" (unless overridden by --slurm_submit_rate_limit in NEXTFLOW_ARGS)"
+fi
+nextflow_args=(--slurm_submit_rate_limit "$submit_rate_limit" "${@}")
 
 # Only the flags run-pipeline.sh accepts. The SLURM resource flags that submit-pipeline.sh would
 # have taken are set as this array's own #SBATCH directives instead, because each array task now is
@@ -242,6 +260,7 @@ job_id=$(printf '%s\n' "$sbatch_header" "$sbatch_body" | sbatch --parsable)
 
 cat << EOF
 submitted $num_jobs pipelines as array job $job_id (max $num_simultaneous running at a time)
+   each submitting at most $submit_rate_limit jobs$submit_rate_note
    partition: $partition   walltime: $time_limit   cpus: $cpus   mem: $mem   (per pipeline)
    log:       $log_folder/${job_id}_*.out   (one per pipeline)
    status:    scripts/status-pipeline.sh $job_id
