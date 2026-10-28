@@ -14,7 +14,16 @@ from pseudobulk.utils import _get_map_to_sanitized, sanitize_to_ascii_underscore
         ("a\tb\nc", "a_b_c"),
         ("a. /\\,b", "a_b"),
         ("café", "cafe"),
+        ("a(b)c", "a_b_c"),
+        ("a (b) c", "a_b_c"),
         ("already_clean_name", "already_clean_name"),
+        # trailing punctuation leaves no trailing underscore
+        ("trailing.", "trailing"),
+        ("trailing (x) ", "trailing_x"),
+        ("trailing_", "trailing"),
+        # a trailing hyphen is spelled out, whether or not hyphens are replaced
+        ("CD4-", "CD4_minus"),
+        ("CD4 -", "CD4__minus"),
     ],
 )
 @pytest.mark.parametrize("sanitize_hyphen", [True, False])
@@ -33,6 +42,12 @@ def test_sanitize_to_ascii_underscore(text: str, expected: str, sanitize_hyphen:
         ("already_clean-name", False, "already_clean-name"),
         ("CD4-positive, alpha-beta T cell", False, "CD4-positive_alpha-beta_T_cell"),
         ("a - b", False, "a_-_b"),
+        # cell names with parentheses found in Sherlock runs
+        ("Ishikawa (Heraklio) 02 ER-", False, "Ishikawa_Heraklio_02_ER_minus"),
+        ("Ishikawa (Heraklio) 02 ER-", True, "Ishikawa_Heraklio_02_ER_minus"),
+        ("PE/CA-PJ41 (clone D2)", False, "PE_CA-PJ41_clone_D2"),
+        ("SK-N-BE(2)", False, "SK-N-BE_2"),
+        ("SK-N-BE(2)", True, "SK_N_BE_2"),
     ],
 )
 def test_sanitize_to_ascii_underscore_hyphens(

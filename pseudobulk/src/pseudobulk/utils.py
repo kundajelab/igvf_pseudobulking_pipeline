@@ -355,7 +355,11 @@ def _check_metadata(df: pd.DataFrame) -> None:
 
 
 def sanitize_to_ascii_underscore(text: str, *, sanitize_hyphen: bool = True) -> str:
-    """Replace unicode with similar ascii, and periods, commas, slashes, and whitespace with "_".
+    """Replace unicode with similar ascii, and punctuation that is unsafe in file names with "_".
+
+    The punctuation is periods, commas, slashes, parentheses, whitespace, and optionally hyphens. A
+    hyphen at the end is spelled out as "_minus" instead (e.g. "ER-" is "ER_minus"), and trailing
+    underscores are removed.
 
     Args:
         text: The text to sanitize.
@@ -366,11 +370,21 @@ def sanitize_to_ascii_underscore(text: str, *, sanitize_hyphen: bool = True) -> 
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more periods, commas, forward or back slashes, whitespace characters, or
-    #    (optionally) hyphens with a single underscore
+    # 4. Spell out a trailing hyphen, which marks a negative (e.g. "ER-"). This comes first, so that
+    #    it is kept even when hyphens are replaced below.
+    text = re.sub(r"-$", "_minus", text)
+
+    # 5. Replace one or more periods, commas, forward or back slashes, parentheses, whitespace
+    #    characters, or (optionally) hyphens with a single underscore
     # \s+ matches spaces, tabs, and newlines
-    pattern = r"[-.,/\\\s]+" if sanitize_hyphen else r"[.,/\\\s]+"
-    return re.sub(pattern, "_", text)
+    # NOTE: parentheses because nextflow escapes them when it writes a file name into a task's
+    # script, and the backslashes survive inside double quotes, so the file is not found (e.g. MACS3
+    # on "Ishikawa (Heraklio) 02 ER-").
+    pattern = r"[-.,/\\()\s]+" if sanitize_hyphen else r"[.,/\\()\s]+"
+    text = re.sub(pattern, "_", text)
+
+    # 6. Remove trailing underscores, e.g. where a name ended in punctuation such as ")"
+    return text.rstrip("_")
 
 
 def _get_map_to_sanitized(cell_name: pd.Series, *, sanitize_hyphen: bool = True) -> dict[str, str]:
