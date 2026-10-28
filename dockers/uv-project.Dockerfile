@@ -1,15 +1,17 @@
 # Dockerfile that containerizes a uv project.
 ARG ENV_NAME
 
-# Use a debian image with uv version 0.11.24 pre-installed
-# https://github.com/astral-sh/uv/pkgs/container/uv/969644123?tag=0.11.24-trixie
-FROM ghcr.io/astral-sh/uv@sha256:89cd2e5a90768838f1a7d26d95e43e3c1d5bbb4861fb54ad0974db3b5360b686 AS build
+# Use a debian image with uv version 0.13.4 pre-installed
+# https://github.com/astral-sh/uv/pkgs/container/uv/1416269754?tag=0.13.4-trixie-slim
+FROM ghcr.io/astral-sh/uv@sha256:2d5298090a57b670458ccae215742352f753f3d583db23f3cd35081d26859ada AS build
 ARG ENV_NAME
 
 # create hack version of date to fix nextflow bug https://github.com/nextflow-io/nextflow/issues/7114
 RUN echo '#!/usr/bin/env bash' > /usr/local/bin/date && \
     echo 'if [ "$1" = "+%s%3N" ]; then /usr/bin/date +%s%N | cut -c1-13 ; else /usr/bin/date "$@" ; fi' >> /usr/local/bin/date && \
     chmod a+x /usr/local/bin/date
+
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 
 # Install the project into the ENV_NAME
 WORKDIR "/opt/$ENV_NAME"
@@ -26,20 +28,14 @@ ENV UV_TOOL_BIN_DIR=/usr/local/bin
 # Install the project's dependencies using the lockfile and settings
 COPY uv.lock /opt/$ENV_NAME/
 COPY pyproject.toml /opt/$ENV_NAME/
+COPY .python-version /opt/$ENV_NAME/
 RUN  uv sync --locked --no-dev --no-install-project
-# RUN --mount=type=cache,target=/root/.cache/uv \
-#     --mount=type=bind,source=uv.lock,target=uv.lock \
-#     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-#     uv sync --locked --no-dev --no-install-project
 
 # Then, add the rest of the project source code and install it
 # Installing separately from its dependencies allows optimal layer caching
 COPY --exclude=uv.lock --exclude=pyproject.toml . "/opt/$ENV_NAME"
 RUN uv build && \
     uv sync --locked --no-dev
-# RUN --mount=type=cache,target=/root/.cache/uv \
-#     uv build && \
-#     uv sync --locked --no-dev
 
 # create a shell-hook to activate
 RUN echo source "/opt/$ENV_NAME/.venv/bin/activate" > /opt/shell-hook.sh
@@ -51,8 +47,8 @@ RUN PYTHON_LOC=$(readlink -f "/opt/$ENV_NAME/.venv/bin/python" | sed 's,^/root/.
     ln -sf "$PYTHON_LOC" "/opt/$ENV_NAME/.venv/bin/python"
 
 # ubuntu 26.04
-# https://hub.docker.com/layers/library/ubuntu/26.04/images/sha256-37a0633b900e99d0937986022b4b4018908e1361704425313cc1c348bebd7230
-FROM ubuntu@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS production
+# https://hub.docker.com/layers/library/ubuntu/26.04/images/
+FROM ubuntu@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS production
 ARG ENV_NAME
 WORKDIR "/opt/$ENV_NAME"
 

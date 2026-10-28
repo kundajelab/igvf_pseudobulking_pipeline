@@ -8,9 +8,10 @@ from typing import Final, cast
 
 import pytest
 
+from igvf_portal.annotations_file_qc import AnnotationsFileQc
 from igvf_portal.connection import PConnection
 from igvf_portal.enums import ContentType, IgvfMode, MultipleRecordsAction
-from igvf_portal.tools import find_bad_beds, get_species, get_url, register
+from igvf_portal.tools import find_bad_beds, get_species, get_url, register, track_pseudobulks
 from igvf_portal.types import AccessionId, IgvfRecord, PortalId
 
 from .conftest import FAKE_SCHEMA, seed_record
@@ -592,3 +593,141 @@ def test_patch_payload_requires_record_id() -> None:
     register._THREAD_LOCAL_DATA.connection = _PatchConnection()
     with pytest.raises(ValueError, match="record_id"):
         register._patch_payload({"description": "d"})
+
+
+def test_load_blacklist_missing(tmp_path: Path) -> None:
+    assert track_pseudobulks._load_blacklist(tmp_path / "blacklist.json") == {}
+
+
+def test_load_blacklist(tmp_path: Path) -> None:
+    blacklist_path = tmp_path / "blacklist.json"
+    blacklist_path.write_text(
+        json.dumps({"IGVFFI0000AAAA": ["md5-a", "md5-b"], "IGVFFI0000BBBB": []})
+    )
+    assert track_pseudobulks._load_blacklist(blacklist_path) == {
+        "IGVFFI0000AAAA": frozenset({"md5-a", "md5-b"}),
+        "IGVFFI0000BBBB": frozenset(),
+    }
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [["IGVFFI0000AAAA"], {"IGVFFI0000AAAA": "md5-a"}, {"IGVFFI0000AAAA": ["md5-a", 1]}],
+)
+def test_load_blacklist_invalid(tmp_path: Path, contents: object) -> None:
+    blacklist_path = tmp_path / "blacklist.json"
+    blacklist_path.write_text(json.dumps(contents))
+    with pytest.raises(ValueError, match=r"blacklist\.json"):
+        track_pseudobulks._load_blacklist(blacklist_path)
+
+
+@pytest.mark.parametrize(
+    ("md5sum", "can_process", "num_uploads", "expected_status"),
+    [
+        # a blacklisted version of the annotations is never pseudobulked, whether or not it could be
+        ("bad-md5", True, 0, "blacklisted"),
+        ("bad-md5", False, 0, "blacklisted"),
+        # other versions of the same annotations file are unaffected
+        ("good-md5", True, 0, "unattempted"),
+        ("good-md5", False, 0, "cannot process"),
+        # once pseudobulks have been uploaded, their status is reported instead
+        ("bad-md5", True, 1, "complete: 1"),
+    ],
+)
+def test_get_tracker_row_blacklisted(
+    monkeypatch: pytest.MonkeyPatch,
+    md5sum: str,
+    can_process: bool,
+    num_uploads: int,
+    expected_status: str,
+) -> None:
+    annotations_accession = AccessionId("IGVFFI0000AAAA")
+    annotations_file_qc = AnnotationsFileQc(
+        annotations_file_accession=annotations_accession,
+        lab="/labs/test/",
+        md5sum=md5sum,
+        missing_columns=frozenset() if can_process else frozenset({"cell_name"}),
+        on_uniformly_processed_data=None,
+        cl_ids=None,
+        assemblies=("GRCh38",),
+    )
+    monkeypatch.setattr(
+        track_pseudobulks,
+        "_process_analysis_set",
+        lambda _connection, _analysis_set: (annotations_file_qc, frozenset({"IGVFDS0000AAAA"})),
+    )
+    monkeypatch.setattr(
+        track_pseudobulks,
+        "_get_all_pseudobulk_audit_errors_and_timestamps",
+        lambda **_kwargs: (
+            set(),
+            ["2026-10-01T00:00:00.000000+00:00"] * num_uploads,
+        ),
+    )
+    monkeypatch.setattr(track_pseudobulks._THREAD_LOCAL_DATA, "connection", None, raising=False)
+    monkeypatch.setattr(
+        track_pseudobulks._THREAD_LOCAL_DATA,
+        "blacklist",
+        {annotations_accession: frozenset({"bad-md5"})},
+        raising=False,
+    )
+    analysis_set = cast(
+        IgvfRecord,
+        {
+            "@id": "/analysis-sets/IGVFDS0000AAAA/",
+            "accession": "IGVFDS0000AAAA",
+            "preferred_assay_titles": ["10x multiome"],
+        },
+    )
+
+    _accession, row, _cl_ids = track_pseudobulks._get_tracker_row(analysis_set)
+
+    assert not isinstance(row, str)
+    assert row["pseudobulking status"] == expected_status
+
+
+def test_process_analysis_set_upgrades_cached_qc(
+    monkeypatch: pytest.MonkeyPatch, connection: PConnection
+) -> None:
+    """A tracker database entry pickled before AnnotationsFileQc had md5sum is still usable."""
+    annotations_accession = AccessionId("IGVFFI0000AAAA")
+    seed_record(
+        connection,
+        _file(
+            annotations_accession,
+            "cell annotations",
+            md5sum="md5-a",
+            creation_timestamp="2026-10-01T00:00:00.000000+00:00",
+        ),
+        frame="object",
+    )
+    cached_qc = AnnotationsFileQc(
+        annotations_file_accession=annotations_accession,
+        lab="/labs/test/",
+        md5sum="md5-a",
+        missing_columns=frozenset(),
+        on_uniformly_processed_data=None,
+        cl_ids=None,
+    )
+    # an object unpickled from before the field existed has no value for it
+    del cached_qc.md5sum
+    analysis_accessions = frozenset({AccessionId("IGVFDS0000AAAA")})
+    monkeypatch.setattr(
+        track_pseudobulks,
+        "_ANNOTATIONS_DB",
+        {annotations_accession: ("md5-a", cached_qc, analysis_accessions)},
+    )
+    analysis_set = cast(
+        IgvfRecord,
+        {
+            "@id": "/analysis-sets/IGVFDS0000AAAA/",
+            "accession": "IGVFDS0000AAAA",
+            "files": [f"/files/{annotations_accession}/"],
+        },
+    )
+
+    qc, accessions = track_pseudobulks._process_analysis_set(connection, analysis_set)
+
+    assert qc is cached_qc
+    assert qc.md5sum == "md5-a"
+    assert accessions == analysis_accessions

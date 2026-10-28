@@ -1114,9 +1114,8 @@ class PConnection(Connection):
 
         Raises:
             ValueError: No identifiers were given.
-            `Exception`: If the server responds with a FORBIDDEN status.
-            `requests.exceptions.HTTPError`: The status code is not ok, and the
-                cause isn't due to a 404 (not found) status code when ``ignore404=True``.
+            RecordNotFound: The status is 404 (not found) and ignore404 is False
+            requests.exceptions.HTTPError: All other errors
         """
         if database is None:
             database = self.submission
@@ -1133,7 +1132,7 @@ class PConnection(Connection):
             raise ValueError("No record identifiers given.")
 
         if requests.codes.FORBIDDEN in status_codes:
-            raise RuntimeError(
+            raise requests.HTTPError(
                 f"Access to IGVF record {status_codes[requests.codes.FORBIDDEN]} is forbidden"
             )
         elif requests.codes.NOT_FOUND in status_codes:
@@ -1521,7 +1520,9 @@ class PConnection(Connection):
             The record.
 
         Raises:
-            RecordNotFound: No record was found for any of the identifiers.
+            ValueError: No identifiers were given.
+            RecordNotFound: The status is 404 (not found) and ignore404 is False
+            requests.exceptions.HTTPError: All other errors
         """
         keys: list[T] = [cast(T, key)] if isinstance(key, str) else list(key)
         if database is None:

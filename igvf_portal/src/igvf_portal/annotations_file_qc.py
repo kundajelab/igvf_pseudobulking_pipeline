@@ -83,6 +83,7 @@ class AnnotationsFileQc:
 
     annotations_file_accession: AccessionId
     lab: str
+    md5sum: str
     missing_columns: frozenset[str]
     on_uniformly_processed_data: set[str] | None
     cl_ids: frozenset[str] | None
@@ -139,6 +140,7 @@ class AnnotationsFileQc:
         cls,
         connection: PConnection,
         annotations_file_accession: AccessionId,
+        md5sum: str,
         metadata_rows: list[list[str]] | None = None,
     ) -> AnnotationsFileQc:
         """Perform quality control on an annotations file.
@@ -146,6 +148,7 @@ class AnnotationsFileQc:
         Args:
             connection: Connection to the IGVF Portal.
             annotations_file_accession: Accession ID of the annotations file.
+            md5sum: md5sum of annotations file in Portal
             metadata_rows: If provided, use these rows as the annotations file contents instead of
                 downloading them.
 
@@ -168,6 +171,7 @@ class AnnotationsFileQc:
             return AnnotationsFileQc(
                 annotations_file_accession=annotations_file_accession,
                 lab=lab,
+                md5sum=md5sum,
                 missing_columns=_REQUIRED_ANNOTATION_COLUMNS,
                 on_uniformly_processed_data=None,
                 cl_ids=None,
@@ -207,6 +211,7 @@ class AnnotationsFileQc:
         return AnnotationsFileQc(
             annotations_file_accession=annotations_file_accession,
             lab=lab,
+            md5sum=md5sum,
             missing_columns=frozenset(missing_columns),
             on_uniformly_processed_data=on_uniformly_processed_data,
             assemblies=assemblies,

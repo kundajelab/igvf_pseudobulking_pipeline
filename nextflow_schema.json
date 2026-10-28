@@ -107,6 +107,12 @@
       "default": 1000,
       "description": "How many slurm jobs may be submitted (pending + running) at once. Must stay under the queue's MaxSubmitJobsPU: 3000 on owners, 2000 on normal)."
     },
+    "slurm_submit_rate_limit": {
+      "type": "string",
+      "default": "1500/1h",
+      "pattern": "^[0-9]+/[0-9]*(s|sec|m|min|h|hour)$",
+      "description": "How fast slurm jobs may be submitted, as <jobs>/<period>, e.g. 1500/1h. Sherlock rejects a user's submissions beyond 1500 per hour, across all of their pipelines."
+    },
     "oom_max_retries": {
       "type": "number",
       "default": 2,

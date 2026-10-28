@@ -57,6 +57,7 @@ pixi init \
     --import "$yaml" \
     -p linux-64 -p osx-64 -p osx-arm64 -p linux-aarch64 \
     .
+grep -v '^authors = ' pixi.toml > pixi.toml.tmp && mv pixi.toml.tmp pixi.toml
 # update lock
 pixi lock --no-install --manifest-path "./pixi.toml"
 popd &> /dev/null

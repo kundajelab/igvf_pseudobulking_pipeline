@@ -136,33 +136,18 @@ fi
 sed 's/^dry_run_arg=".*"$/dry_run_arg=""/' "$dry_run_upload_script" > "$earnest_upload_script"
 chmod u+x "$earnest_upload_script"
 
-# Need to run upload in a non-preemptible queue, not the login node
-job_name=igvf-upload/$principal_analysis
-log_folder="$log_dir/$job_name"
-mkdir -p "$log_folder"
-sbatch_script=$(cat << EOF
-#!/usr/bin/env bash
-#SBATCH --job-name=$job_name
-#SBATCH --output=$log_folder/%j.out
-#SBATCH --partition=$queue
-#SBATCH --time=$time_limit
-#SBATCH --cpus-per-task=$cpus
-#SBATCH --mem=$mem
-#SBATCH --chdir=$repo_dir
-set -euo pipefail
-
-echo "head process: job \$SLURM_JOB_ID on \$(hostname), partition \$SLURM_JOB_PARTITION"
-
-pixi run run-in-container --project igvf_portal "$earnest_upload_script"
-EOF
-)
-
-job_id=$(printf '%s\n' "$sbatch_script" | sbatch --parsable)
-
-cat << EOF
-submitted nextflow head process as job $job_id
-   portal:    $mode
-   partition: $queue   walltime: $time_limit   cpus: $cpus   mem: $mem
-   log:       $log_folder/$job_id.out
-   status:    scripts/status-pipeline.sh $job_id
-EOF
+# Run the upload on a non-preemptible queue rather than the login node. Requeueing would restart a
+# failed upload from the beginning, so leave restarts to a manual resubmission.
+1>&2 echo "Uploading to the $mode IGVF portal."
+pixi run run-in-container \
+    --project igvf_portal \
+    --queue "$queue" \
+    --time "$time_limit" \
+    --cpus "$cpus" \
+    --mem "$mem" \
+    --log-dir "$log_dir" \
+    --name "igvf-upload/$principal_analysis" \
+    --no-requeue \
+    --work-dir "$output_folder" \
+    -- \
+    "$earnest_upload_script"

@@ -310,7 +310,7 @@ def find_bad_beds(
             "status!": "deleted",
             "validation_error_detail": "*",
             "lab.@id": "/labs/anshul-kundaje/",
-            "file_set.file_set_type": "pseudobulk analysis"
+            "file_set.file_set_type": "gene expression pseudobulk"
         },
     )
     """

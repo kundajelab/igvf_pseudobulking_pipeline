@@ -7,13 +7,8 @@ include { DOWNLOAD_ACCESSION_FILES } from './modules/DOWNLOAD_ACCESSION_FILES.nf
 include { COUNT_BARCODES } from './modules/COUNT_BARCODES.nf'
 include { DETERMINE_SPECIES } from './modules/DETERMINE_SPECIES.nf'
 include { SPLIT_FRAGMENTS } from './modules/SPLIT_FRAGMENTS.nf'
-include { SORT_FRAGMENTS as SORT_PSEUDOREP_1 } from './modules/SORT_FRAGMENTS.nf'
-include { SORT_FRAGMENTS as SORT_PSEUDOREP_2 } from './modules/SORT_FRAGMENTS.nf'
-include { SORT_FRAGMENTS as SORT_PSEUDOREP_T } from './modules/SORT_FRAGMENTS.nf'
-include { SORT_FRAGMENTS as SORT_SEPARATED_FRAGMENTS } from './modules/SORT_FRAGMENTS.nf'
-include { MACS3 as MACS3_REP_1 } from './modules/MACS3.nf'
-include { MACS3 as MACS3_REP_2 } from './modules/MACS3.nf'
-include { MACS3 as MACS3_REP_T } from './modules/MACS3.nf'
+include { SORT_FRAGMENTS } from './modules/SORT_FRAGMENTS.nf'
+include { MACS3 } from './modules/MACS3.nf'
 include { CALL_PEAKS } from './modules/CALL_PEAKS.nf'
 include { PSEUDOBULK_RNA } from './modules/PSEUDOBULK_RNA.nf'
 include { ANNOTATION_MAPPING } from './modules/ANNOTATION_MAPPING.nf'
@@ -191,28 +186,25 @@ workflow {
     // even when there is no RNA data and PSEUDOBULK_RNA never runs.
     ANNOTATION_MAPPING(metadata_file)
 
-    // Concat and sort fragments files
-    // NOTE: do not need to sort pseudoreps 1 AND 2 since they are only used for peak calling and
-    // macs3 can handle unsorted input. However sorting is very fast and produces consistent order,
-    // so we sort anyway.
-    SORT_PSEUDOREP_1(groupById(SPLIT_FRAGMENTS.out.pseudorep_1), chrom_sizes, fragments_auto_sql, false)
-    SORT_PSEUDOREP_2(groupById(SPLIT_FRAGMENTS.out.pseudorep_2), chrom_sizes, fragments_auto_sql, false)
-    SORT_SEPARATED_FRAGMENTS(groupById(SPLIT_FRAGMENTS.out.separated_fragments), chrom_sizes, fragments_auto_sql, true)
-    SORT_PSEUDOREP_T(groupById(SPLIT_FRAGMENTS.out.pseudorep_t), chrom_sizes, fragments_auto_sql, false)
+    // Concat and sort fragments files: all four sets of one pseudobulk in one job, of the form
+    // (pseudobulk_id, fragments, pseudorep_1, pseudorep_2, pseudorep_t), each a list of files
+    // NOTE: split-fragments writes all four files for every pseudobulk it writes any for, so the
+    // joins drop nothing.
+    sort_in_ch = groupById(SPLIT_FRAGMENTS.out.separated_fragments)
+        .join(groupById(SPLIT_FRAGMENTS.out.pseudorep_1), by: 0)
+        .join(groupById(SPLIT_FRAGMENTS.out.pseudorep_2), by: 0)
+        .join(groupById(SPLIT_FRAGMENTS.out.pseudorep_t), by: 0)
+    SORT_FRAGMENTS(sort_in_ch, chrom_sizes, fragments_auto_sql)
 
-    // Use MACS to call peaks for pseudoreps
-    MACS3_REP_1(SORT_PSEUDOREP_1.out.sorted_fragments_tsv, chrom_sizes, species, "1")
-    MACS3_REP_2(SORT_PSEUDOREP_2.out.sorted_fragments_tsv, chrom_sizes, species, "2")
-    MACS3_REP_T(SORT_PSEUDOREP_T.out.sorted_fragments_tsv, chrom_sizes, species, "t")
+    // Use MACS to call peaks for the three pseudoreps of each pseudobulk, in one job
+    MACS3(SORT_FRAGMENTS.out.pseudoreps, chrom_sizes, species)
 
     // Group data back together for calling peaks, this channel will yield a series of tuples (one
     // for each pseudobulk) of the form:
     // (pseudobulk_id, sorted_fragments, rep_1_peaks, rep_1_ppois, rep_2_peaks, rep_2_ppois,
     //  rep_t_peaks, rep_t_ppois)
-    peaks_in_ch = SORT_SEPARATED_FRAGMENTS.out.sorted_fragments_tsv
-        .join(MACS3_REP_1.out.output, by: 0)
-        .join(MACS3_REP_2.out.output, by: 0)
-        .join(MACS3_REP_T.out.output, by: 0)
+    peaks_in_ch = SORT_FRAGMENTS.out.sorted_fragments_tsv
+        .join(MACS3.out.output, by: 0)
     CALL_PEAKS(peaks_in_ch, chrom_sizes, blacklist, peaks_auto_sql)
 
     // create a channel with pseudobulked RNA files grouped together with metadata
@@ -296,11 +288,11 @@ workflow {
         ANNOTATION_MAPPING.out.cell_name_to_annotation_mapping,
         PSEUDOBULK_RNA.out.pseudobulk_counts.collect(sort: true).ifEmpty([]),
         PSEUDOBULK_RNA.out.pseudobulk_h5ads.collect(sort: true).ifEmpty([]),
-        SORT_SEPARATED_FRAGMENTS.out.sorted_fragments_tsv
+        SORT_FRAGMENTS.out.sorted_fragments_tsv
             .map{_pb_id, fragments -> fragments}
             .collect(sort: true)
             .ifEmpty([]),
-        SORT_SEPARATED_FRAGMENTS.out.fragments_bigbed.collect(sort: true).ifEmpty([]),
+        SORT_FRAGMENTS.out.fragments_bigbed.collect(sort: true).ifEmpty([]),
         CALL_PEAKS.out.raw_insertions_bigwig.collect(sort: true).ifEmpty([]),
         CALL_PEAKS.out.filtered_overlap_calls.collect(sort: true).ifEmpty([]),
         CALL_PEAKS.out.pvalue_bigwig.collect(sort: true).ifEmpty([]),

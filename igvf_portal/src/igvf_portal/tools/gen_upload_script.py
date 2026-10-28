@@ -18,7 +18,7 @@ def gen_upload_script(
     compute_md5: bool = True,
     lab: str = "/labs/anshul-kundaje/",
     award: str = "/awards/HG012069/",
-    file_set_type: str = "pseudobulk analysis",
+    file_set_type: str = "gene expression pseudobulk",
     alias_prefix: str = "anshul-kundaje",
     igvf_mode: IgvfMode = IgvfMode.prod,
     dry_run: bool = True,

@@ -1,4 +1,5 @@
 import csv
+import json
 import logging
 import pickle
 from collections import defaultdict
@@ -53,6 +54,36 @@ _VALIDATION_GRACE_HOURS: Final[int] = 48
 
 
 _ANNOTATIONS_DB: dict[AccessionId, tuple[str, AnnotationsFileQc, frozenset[AccessionId]]] = {}
+
+type Blacklist = Mapping[AccessionId, frozenset[str]]
+"""Map from cell annotations file accession to the md5sums of its versions not to pseudobulk."""
+
+
+def _load_blacklist(blacklist_path: Path) -> Blacklist:
+    """Load the blacklist of cell annotations files, or an empty one if the file does not exist.
+
+    The file is a JSON object mapping each cell annotations file accession to a list of md5sums.
+
+    Args:
+        blacklist_path: Path to the blacklist JSON.
+
+    Returns:
+        Read-only map from cell annotations file accession to the blacklisted md5sums.
+    """
+    if not blacklist_path.exists():
+        return MappingProxyType({})
+    with blacklist_path.open("rt") as f_in:
+        loaded: object = json.load(f_in)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{blacklist_path} must hold a JSON object, not {type(loaded).__name__}")
+    blacklist: dict[AccessionId, frozenset[str]] = {}
+    for accession, md5sums in loaded.items():
+        if not isinstance(md5sums, list) or not all(isinstance(md5sum, str) for md5sum in md5sums):
+            raise ValueError(
+                f"{blacklist_path}: the value for {accession} must be a list of md5sum strings"
+            )
+        blacklist[AccessionId(accession)] = frozenset(md5sums)
+    return MappingProxyType(blacklist)
 
 
 def _clear_conditional_format_rules(
@@ -127,6 +158,7 @@ def _add_status_conditional_formatting(
     # Sheets uses the first matching rule, so the rules for choosing row color are:
     # if status starts with complete: green (good!)
     # elif status == CANNOT_PROCESS: red (input data has problems)
+    # elif status == BLACKLISTED: red (this version of the annotations is not to be pseudobulked)
     # elif status == "upload status not validated": orange (portal is validating the upload)
     # elif status includes "upload status not validated" and the latest upload is under
     #   _VALIDATION_GRACE_HOURS old: orange (the audit may just be lagging validation)
@@ -136,6 +168,10 @@ def _add_status_conditional_formatting(
         (f"={is_complete}", _STATUS_ROW_COLORS["green"]),
         (
             f'=${status_col_letter}2="{PseudobulkUploadStatus.CANNOT_PROCESS.value}"',
+            _STATUS_ROW_COLORS["red"],
+        ),
+        (
+            f'=${status_col_letter}2="{PseudobulkUploadStatus.BLACKLISTED.value}"',
             _STATUS_ROW_COLORS["red"],
         ),
         (
@@ -335,6 +371,10 @@ def _process_analysis_set(
     md5sum = annotations_file["md5sum"]
     match _ANNOTATIONS_DB.get(annotations_accession):
         case db_md5sum, annotations_file_qc, analysis_accessions if db_md5sum == md5sum:
+            # Entries pickled before AnnotationsFileQc recorded the md5sum load without it, and
+            # reading it would raise. It is the one just matched, so fill it in.
+            if not hasattr(annotations_file_qc, "md5sum"):
+                annotations_file_qc.md5sum = md5sum
             return annotations_file_qc, analysis_accessions
         case _:
             with connection.read_remote_bytes(key=annotations_accession, decompress=True) as f_in:
@@ -343,6 +383,7 @@ def _process_analysis_set(
                 annotations_file_qc = AnnotationsFileQc.qc(
                     connection=connection,
                     annotations_file_accession=annotations_accession,
+                    md5sum=md5sum,
                     metadata_rows=metadata_rows,
                 )
             except Exception as exception:
@@ -405,11 +446,17 @@ def _get_tracker_row(
         )
         num_pseudobulks = len(submission_timestamps)
 
+        blacklist: Blacklist = _THREAD_LOCAL_DATA.blacklist
+        is_blacklisted = annotations_file_qc.md5sum in blacklist.get(
+            annotations_file_qc.annotations_file_accession, frozenset()
+        )
         pseudobulking_status: str = (
             ",".join(sorted(audit_errors))
             if len(audit_errors) > 0
             else (
-                PseudobulkUploadStatus.UNATTEMPTED.value
+                PseudobulkUploadStatus.BLACKLISTED.value
+                if is_blacklisted
+                else PseudobulkUploadStatus.UNATTEMPTED.value
                 if annotations_file_qc.can_process
                 else PseudobulkUploadStatus.CANNOT_PROCESS.value
             )
@@ -438,6 +485,7 @@ def _iter_rows(
     igvf_mode: IgvfMode,
     cl_ids_to_update: defaultdict[str, list[str]],
     num_workers: int,
+    blacklist: Blacklist,
 ) -> Iterator[PseudobulkTrackerRow]:
     """Iterate over principal analysis sets and yield PseudobulkTrackerRows with their status."""
     if analysis_sets is None:
@@ -445,7 +493,7 @@ def _iter_rows(
     logger.info(f"Scanning analysis sets with {num_workers} workers.")
     lock = Lock()
     with ThreadPoolExecutor(
-        max_workers=num_workers, initializer=_init_worker, initargs=(igvf_mode, lock)
+        max_workers=num_workers, initializer=_init_worker, initargs=(igvf_mode, lock, blacklist)
     ) as executor:
         for result in executor.map(_get_tracker_row, analysis_sets, buffersize=2 * num_workers):
             match result:
@@ -472,9 +520,12 @@ def _iter_rows(
 def _init_worker(
     igvf_mode: IgvfMode,
     lock: Lock,
+    blacklist: Blacklist,
 ) -> None:
-    """Initialize workers in other processes."""
+    """Initialize workers in other threads."""
     _THREAD_LOCAL_DATA.connection = PConnection.new(igvf_mode=igvf_mode, lock=lock)
+    # NOTE: shared rather than copied, which is safe because it is read-only
+    _THREAD_LOCAL_DATA.blacklist = blacklist
 
 
 def track_pseudobulks(
@@ -495,7 +546,9 @@ def track_pseudobulks(
     google_service_account_json.
 
     Args:
-        output: Path to write output table (as a TSV).
+        output: Path to write output table (as a TSV). If it holds a blacklist.json, mapping cell
+            annotations file accessions to lists of md5sums, unpseudobulked analysis sets whose
+            annotations file has a listed md5sum are marked blacklisted.
         compute: If True, compute statuses and write to TSV. If False, use existing local TSV for
             upload.
         upload: If True, upload to google sheets.
@@ -523,6 +576,7 @@ def track_pseudobulks(
         with database_path.open("rb") as f_in:
             global _ANNOTATIONS_DB
             _ANNOTATIONS_DB = pickle.load(f_in)
+    blacklist = _load_blacklist(output / "blacklist.json")
 
     pseudobulk_status_tsv = output / "pseudobulk_status.tsv"
     if compute:
@@ -553,6 +607,7 @@ def track_pseudobulks(
                 igvf_mode=igvf_mode,
                 cl_ids_to_update=cl_ids,
                 num_workers=num_workers,
+                blacklist=blacklist,
             )
             logger.info(f"Writing tracker rows to {pseudobulk_status_tsv}")
             _write_tsv(

@@ -127,6 +127,7 @@ class PseudobulkUploadStatus(Enum):
     COMPLETE = "complete"
     NEEDS_FIX = "needs-fix"
     CANNOT_PROCESS = "cannot process"
+    BLACKLISTED = "blacklisted"
 
 
 class MultipleRecordsAction(Enum):

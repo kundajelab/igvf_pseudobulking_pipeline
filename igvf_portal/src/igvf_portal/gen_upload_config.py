@@ -43,7 +43,7 @@ class GenUploadConfig:
     dry_run: bool = True
     lab: PortalId = DEFAULT_LAB
     award: PortalId = DEFAULT_AWARD
-    file_set_type: str = "pseudobulk analysis"
+    file_set_type: str = "gene expression pseudobulk"
     alias_prefix: str = "anshul-kundaje"
     metadata_path: Path | None = None
     annotations_path: Path | None = None

@@ -221,7 +221,7 @@ def test_get_not_found(monkeypatch: pytest.MonkeyPatch, connection: PConnection)
 
 def test_get_forbidden(monkeypatch: pytest.MonkeyPatch, connection: PConnection) -> None:
     monkeypatch.setattr(connection.session, "get", _fake_session_get({"lab:a": _Response(403)}))
-    with pytest.raises(RuntimeError, match="forbidden"):
+    with pytest.raises(requests.exceptions.HTTPError, match="forbidden"):
         connection.get("lab:a")
 
 

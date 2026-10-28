@@ -152,7 +152,7 @@ def test_pseudobulk_row(
         "aliases": "anshul-kundaje:pseudobulk-IGVFDS0000AAAA-naive_T_cell-IGVFSM0000SSSS",
         "award": "/awards/HG012069/",
         "lab": "/labs/anshul-kundaje/",
-        "file_set_type": "pseudobulk analysis",
+        "file_set_type": "gene expression pseudobulk",
         "cell_type": "/sample-terms/CL_0000084/",
         "samples": "IGVFSM0000SSSS",
         "input_file_sets": "/analysis-sets/IGVFDS0000AAAA/",
