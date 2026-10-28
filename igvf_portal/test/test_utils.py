@@ -79,6 +79,22 @@ def test_sanitize_to_ascii_underscore() -> None:
     assert utils.sanitize_to_ascii_underscore("Café, a.b/c\\d  e") == "Cafe_a_b_c_d_e"
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("a(b)c", "a_b_c"),
+        ("Ishikawa (Heraklio) 02 ER-", "Ishikawa_Heraklio_02_ER_minus"),
+        ("SK-N-BE(2)", "SK_N_BE_2"),
+        ("PE/CA-PJ41 (clone D2)", "PE_CA_PJ41_clone_D2"),
+        ("trailing.", "trailing"),
+        ("trailing_", "trailing"),
+        ("CD4-", "CD4_minus"),
+    ],
+)
+def test_sanitize_to_ascii_underscore_parentheses(text: str, expected: str) -> None:
+    assert utils.sanitize_to_ascii_underscore(text) == expected
+
+
 class _Sleeps:
     def __init__(self) -> None:
         self.calls: list[float] = []

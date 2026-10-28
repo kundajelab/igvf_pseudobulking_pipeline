@@ -213,17 +213,28 @@ def read_tsv(tsv: Path) -> list[list[str]]:
 def sanitize_to_ascii_underscore(text: str) -> str:
     """Replace unicode with similar ascii.
 
-    Also replace periods, commas, slashes, and whitespace with underscores.
+    Also replace hyphens, periods, commas, slashes, parentheses, and whitespace with underscores. A
+    hyphen at the end is spelled out as "_minus" instead (e.g. "ER-" is "ER_minus"), and trailing
+    underscores are removed.
     """
     # 1. Normalize Unicode to NFKD form to separate characters from accents
     # 2. Encode to ASCII and ignore characters that cannot be converted
     # 3. Decode back to a string
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
 
-    # 4. Replace one or more periods, commas, forward or back slashes, or whitespace characters with
-    #    a single underscore
+    # 4. Spell out a trailing hyphen, which marks a negative (e.g. "ER-"). This comes first, so that
+    #    it is kept rather than replaced with the other hyphens below.
+    text = re.sub(r"-$", "_minus", text)
+
+    # 5. Replace one or more hyphens, periods, commas, forward or back slashes, parentheses, or
+    #    whitespace characters with a single underscore
     # \s+ matches spaces, tabs, and newlines
-    return re.sub(r"[-.,/\\\s]+", "_", text)
+    # NOTE: parentheses as in pseudobulk's sanitize_to_ascii_underscore, which keeps them out of the
+    # pseudobulk IDs these file names are made from.
+    text = re.sub(r"[-.,/\\()\s]+", "_", text)
+
+    # 6. Remove trailing underscores, e.g. where a name ended in punctuation such as ")"
+    return text.rstrip("_")
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True, slots=True)

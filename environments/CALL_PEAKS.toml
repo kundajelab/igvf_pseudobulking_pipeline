@@ -1,5 +1,4 @@
 [workspace]
-authors = ["Ted Brookings <ted.brookings@googlemail.com>"]
 channels = ["conda-forge", "bioconda", "nodefaults", "https://conda.anaconda.org/conda-forge", "https://conda.anaconda.org/bioconda"]
 name = "call_peaks"
 platforms = ["linux-64", "osx-64", "osx-arm64", "linux-aarch64"]
