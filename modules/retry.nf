@@ -38,7 +38,7 @@ def slurmReportedOutOfMemory(workDir) {
             log.read(tail, log.size() - tail_size)
             return new String(tail.array(), 0, tail.position(), "UTF-8").contains("oom_kill")
         }
-    } catch (IOException exception) {
+    } catch (IOException _exception) {
         return false
     }
 }

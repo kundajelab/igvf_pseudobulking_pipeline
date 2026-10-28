@@ -14,7 +14,7 @@ def loadedQcSize(qc_file) {
         return new java.util.zip.ZipFile(qc_file.toRealPath().toFile()).withCloseable { zip ->
             zip.entries().toList().sum { entry -> entry.size >= 0 ? entry.size : 4 * entry.compressedSize } ?: 0
         }
-    } catch (IOException exception) {
+    } catch (IOException _exception) {
         // the largest TSS matrix measured expanded to 3.2x its size on disk
         return 4 * qc_file.size()
     }
